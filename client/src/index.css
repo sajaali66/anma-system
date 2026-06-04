@@ -1,0 +1,69 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap");
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+html,
+body,
+#root {
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+html[lang="ar"] {
+  direction: rtl;
+}
+
+body {
+  background: #f8fafc;
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+}
+
+[data-sidebar="sidebar"] {
+  position: sticky !important;
+  top: 0;
+  height: 100vh !important;
+  background: #ffffff !important;
+  opacity: 1 !important;
+  z-index: 40;
+}
+
+[data-sidebar="inset"] {
+  width: 100%;
+  min-width: 0;
+  background: #f8fafc !important;
+}
+
+.card,
+.system-card,
+.kpi-card,
+[data-slot="card"],
+[role="dialog"] {
+  background: #ffffff !important;
+  opacity: 1 !important;
+}
+
+table,
+thead,
+tbody,
+tr,
+td,
+th {
+  background: #ffffff;
+}
+
+img,
+svg,
+canvas {
+  max-width: 100%;
+}
