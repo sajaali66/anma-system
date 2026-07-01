@@ -1,0 +1,176 @@
+{
+  "organizations": [
+    {
+      "id": 1,
+      "name": "جمعية إنماء",
+      "city": "الرياض",
+      "contactPerson": "محمد العتيبي",
+      "phone": "0500000000",
+      "email": "info@anmaa.sa",
+      "status": "نشطة",
+      "notes": "",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    }
+  ],
+  "doctors": [
+    {
+      "id": 1,
+      "name": "د. خالد الرفاعي",
+      "specialty": "تخاطب",
+      "organizationId": 1,
+      "organization": "جمعية إنماء",
+      "phone": "0500000000",
+      "email": "speech@anma.sa",
+      "status": "نشط",
+      "notes": "",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 2,
+      "name": "د. شهد الخليفة",
+      "specialty": "علاج وظيفي",
+      "organizationId": 1,
+      "organization": "جمعية إنماء",
+      "phone": "0500000001",
+      "email": "ot@anma.sa",
+      "status": "نشط",
+      "notes": "",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    }
+  ],
+  "cases": [
+    {
+      "id": 1,
+      "caseNumber": "C001",
+      "childName": "أحمد محمد",
+      "guardianName": "",
+      "familyPhone": "",
+      "beneficiaryPhone": "",
+      "phone": "",
+      "age": 5,
+      "gender": "غير محدد",
+      "city": "الرياض",
+      "organization": "جمعية إنماء",
+      "organizationId": 1,
+      "doctorId": 1,
+      "referralReason": "",
+      "hasPreviousDiagnosis": "غير محدد",
+      "previousDiagnosis": "",
+      "referralSource": "",
+      "disabilityType": "توحد",
+      "disorderType": "توحد",
+      "specialist": "د. خالد الرفاعي",
+      "specialistName": "د. خالد الرفاعي",
+      "specialistSpecialty": "تخاطب",
+      "referralType": "تكاملية",
+      "status": "نشطة",
+      "referralDate": "2026-07-01T10:53:35.765Z",
+      "treatmentPlan": "خطة تدخل تخاطب وسلوك لمدة 8 جلسات",
+      "financialStatus": "",
+      "notes": "",
+      "createdAt": "2026-07-01T10:53:35.765Z",
+      "updatedAt": "2026-07-01T10:53:35.765Z"
+    }
+  ],
+  "sessions": [],
+  "impact": [],
+  "compliance": [],
+  "financing": [],
+  "reports": [],
+  "alerts": [],
+  "diseases": [
+    {
+      "id": 1,
+      "name": "اضطراب طيف التوحد",
+      "category": "نمائي",
+      "defaultSpecialist": "طبيب نمو وسلوك + أخصائي تعديل سلوك",
+      "organization": "كل الجمعيات",
+      "organizationId": null,
+      "doctorId": null,
+      "priority": "مرتفع",
+      "status": "نشط",
+      "notes": "يحتاج متابعة دورية وتقارير مختصين دقيقة.",
+      "createdAt": "2026-07-01T10:53:35.765Z",
+      "updatedAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 2,
+      "name": "تأخر نطق / اضطراب لغة",
+      "category": "نطق وتخاطب",
+      "defaultSpecialist": "أخصائي نطق وتخاطب",
+      "organization": "كل الجمعيات",
+      "organizationId": null,
+      "doctorId": null,
+      "priority": "متوسط",
+      "status": "نشط",
+      "notes": "يرتبط بخطة جلسات تخاطب وقياس مفردات.",
+      "createdAt": "2026-07-01T10:53:35.765Z",
+      "updatedAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 3,
+      "name": "فرط حركة وتشتت انتباه ADHD",
+      "category": "نفسي / سلوكي",
+      "defaultSpecialist": "طبيب نمو وسلوك / أخصائي نفسي",
+      "organization": "كل الجمعيات",
+      "organizationId": null,
+      "doctorId": null,
+      "priority": "متوسط",
+      "status": "نشط",
+      "notes": "يحتاج متابعة سلوكية ومدرسية.",
+      "createdAt": "2026-07-01T10:53:35.765Z",
+      "updatedAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 4,
+      "name": "صعوبات تعلم",
+      "category": "تعليمي",
+      "defaultSpecialist": "أخصائي صعوبات تعلم",
+      "organization": "كل الجمعيات",
+      "organizationId": null,
+      "doctorId": null,
+      "priority": "متوسط",
+      "status": "نشط",
+      "notes": "يحتاج خطة تعليمية فردية.",
+      "createdAt": "2026-07-01T10:53:35.765Z",
+      "updatedAt": "2026-07-01T10:53:35.765Z"
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "name": "سجا علي الأمير",
+      "email": "admin@anma.sa",
+      "password": "123456",
+      "role": "super_admin",
+      "organizationId": null,
+      "doctorId": null,
+      "status": "نشط",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 2,
+      "name": "حساب الجمعية",
+      "email": "org@test.com",
+      "password": "123456",
+      "role": "organization",
+      "organizationId": 1,
+      "doctorId": null,
+      "status": "نشط",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    },
+    {
+      "id": 3,
+      "name": "د. خالد الرفاعي",
+      "email": "doctor@test.com",
+      "password": "123456",
+      "role": "doctor",
+      "organizationId": 1,
+      "doctorId": 1,
+      "status": "نشط",
+      "createdAt": "2026-07-01T10:53:35.765Z"
+    }
+  ],
+  "currentUserId": 1,
+  "savedAt": "2026-07-01T11:04:57.584Z"
+}

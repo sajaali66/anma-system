@@ -1,7 +1,11 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700;800&display=swap");
 
 @import "tailwindcss";
 @import "tw-animate-css";
+
+* {
+  box-sizing: border-box;
+}
 
 html,
 body,
@@ -20,37 +24,88 @@ html[lang="ar"] {
 
 body {
   background: #f8fafc;
+  color: #0f172a;
 }
 
-input,
-select,
-textarea,
-button {
-  font-family: "IBM Plex Sans Arabic", sans-serif;
-}
-
-[data-sidebar="sidebar"] {
-  position: sticky !important;
-  top: 0;
-  height: 100vh !important;
-  background: #ffffff !important;
-  opacity: 1 !important;
-  z-index: 40;
-}
-
-[data-sidebar="inset"] {
+/* يحافظ على شكل النظام */
+main {
   width: 100%;
-  min-width: 0;
-  background: #f8fafc !important;
+  max-width: 100%;
+  overflow-x: hidden;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
 }
 
+/* يمنع الاسم الطويل يكسر الهيدر */
+.truncate,
+.user-name,
+.header-title,
+.sidebar-user-name {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* الكروت العامة */
 .card,
 .system-card,
 .kpi-card,
 [data-slot="card"],
 [role="dialog"] {
   background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 1.25rem !important;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04) !important;
   opacity: 1 !important;
+}
+
+/* كروت الإحصائيات */
+.kpi-card {
+  padding: 1.5rem;
+  min-height: 150px;
+  transition: 0.2s ease;
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* الأزرار */
+button {
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+}
+
+.primary-action,
+.btn-primary {
+  background: #ff4b12 !important;
+  color: white !important;
+  border-radius: 0.9rem !important;
+  font-weight: 700 !important;
+  box-shadow: 0 10px 24px rgba(255, 75, 18, 0.2);
+}
+
+.primary-action:hover,
+.btn-primary:hover {
+  background: #e63f0c !important;
+}
+
+/* المدخلات */
+input,
+select,
+textarea {
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+  background: #ffffff !important;
+  border-color: #dbe3ef !important;
+  border-radius: 0.9rem !important;
+}
+
+/* الجداول */
+.overflow-x-auto {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 table,
@@ -62,8 +117,74 @@ th {
   background: #ffffff;
 }
 
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+td {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* السايدبار */
+[data-sidebar="sidebar"],
+aside {
+  background: #ffffff !important;
+  opacity: 1 !important;
+  border-inline-start: 1px solid #e2e8f0;
+}
+
+[data-sidebar="inset"] {
+  width: 100%;
+  min-width: 0;
+  background: #f8fafc !important;
+}
+
+/* القوائم المنسدلة والمودالات */
+[data-radix-popper-content-wrapper],
+[data-radix-dropdown-menu-content],
+[data-radix-select-content],
+[data-radix-popover-content],
+[role="dialog"] {
+  background: #ffffff !important;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+}
+
+/* الرسوم */
+.recharts-wrapper,
+.recharts-responsive-container {
+  max-width: 100% !important;
+  overflow: hidden;
+  font-family: "IBM Plex Sans Arabic", sans-serif !important;
+}
+
+/* الصور والأيقونات */
 img,
 svg,
 canvas {
   max-width: 100%;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }

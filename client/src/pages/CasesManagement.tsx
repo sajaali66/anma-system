@@ -24,6 +24,7 @@ import {
   Filter,
   ShieldCheck,
   UserCheck,
+  Settings2,
 } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
@@ -66,10 +67,13 @@ const caseFormSchema = z.object({
   beneficiaryPhone: z.string().optional(),
   gender: z.enum(["ذكر", "أنثى", "غير محدد"]),
   birthDate: z.date().optional(),
-  age: z.number().min(0, "العمر مطلوب").max(100, "العمر غير صحيح"),
+  age: z.number().min(0, "العمر غير صحيح").max(100, "العمر غير صحيح").optional(),
   disabilityType: z.string().optional(),
   financialStatus: z.string().optional(),
-  organization: z.string().min(1, "اسم الجمعية مطلوب"),
+  organization: z.string().optional(),
+  organizationId: z.number().nullable().optional(),
+  specialistName: z.string().optional(),
+  doctorId: z.number().nullable().optional(),
   notes: z.string().optional(),
 });
 
@@ -84,23 +88,34 @@ type CaseItem = {
   phone?: string;
   gender?: "ذكر" | "أنثى" | "غير محدد";
   birthDate?: string | Date;
-  age: number;
+  age?: number;
   disabilityType?: string;
   financialStatus?: string;
   organization: string;
+  organizationId?: number | null;
   notes?: string | null;
   status: "جديدة" | "نشطة" | "مكتملة" | "متعثرة";
   referralDate: string | Date;
 
   city?: string;
   disorderType?: string;
+  doctorId?: number | null;
   specialist?: string;
   specialistName?: string;
   specialistSpecialty?: string;
   specialty?: string;
   referralType?: "تكاملية" | "مساندة" | "لاحقة";
 
-  // حقول اختيارية إذا كان الباكند يرجع عدد الجلسات أو آخر جلسة
+  reportsCount?: number;
+  lastReportDate?: string | Date;
+  progressScore?: number;
+  smartRecommendation?: string;
+  riskLevel?: SmartLevel;
+  approvedSessionCount?: number;
+  remainingSessions?: number;
+  financingStatus?: string;
+  totalFinancing?: number;
+
   sessionsCount?: number;
   sessionCount?: number;
   totalSessions?: number;
@@ -111,8 +126,11 @@ type CaseItem = {
 
 const lightInputClass = "placeholder:text-muted-foreground/40";
 
-
 const CASE_SMART_SYNC_STORAGE_KEY = "anma-case-smart-sync";
+const DISEASE_OPTIONS_STORAGE_KEY = "anma-disease-options";
+const CLINICAL_REPORTS_STORAGE_KEY = "anma-clinical-reports";
+
+type SmartLevel = "غير محدد" | "ممتاز" | "متابعة" | "خطر";
 
 type StoredCaseSmartSync = {
   sessionsCount?: number;
@@ -126,6 +144,175 @@ type StoredCaseSmartSync = {
   improvement?: number;
   updatedAt?: string;
 };
+
+type ClinicalReport = {
+  id: string;
+  caseId: number;
+  title: string;
+  reportType: string;
+  doctorName: string;
+  specialty?: string;
+  reportDate: string | Date;
+  reportText: string;
+  recommendations?: string;
+  administrativeNotes?: string;
+  createdAt: string;
+};
+
+type DoctorOption = {
+  id: number;
+  name: string;
+  specialty?: string;
+  status?: string;
+  organizationId?: number | null;
+  organization?: string;
+};
+
+type OrganizationOption = {
+  id: number;
+  name: string;
+  city?: string;
+  status?: string;
+};
+
+function readClinicalReportsMap(): Record<string, ClinicalReport[]> {
+  try {
+    const raw = localStorage.getItem(CLINICAL_REPORTS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getClinicalReportsByCase(caseId?: number): ClinicalReport[] {
+  if (!caseId) return [];
+  const map = readClinicalReportsMap();
+  const reports = map[String(caseId)];
+  return Array.isArray(reports) ? reports : [];
+}
+
+function getLatestReportRecommendation(caseId?: number) {
+  const reports = getClinicalReportsByCase(caseId);
+  return reports[0]?.recommendations || reports[0]?.reportText || "";
+}
+
+function getLatestReportDate(caseId?: number) {
+  const reports = getClinicalReportsByCase(caseId);
+  return reports[0]?.reportDate;
+}
+
+function getCaseFundingSummary(caseItem: CaseItem) {
+  const approved = Number(caseItem.approvedSessionCount || 0);
+  const used = Number(caseItem.usedSessionCount || caseItem.sessionsCount || caseItem.totalSessions || 0);
+  const remaining = Math.max(approved - used, 0);
+
+  if (caseItem.financingStatus) return caseItem.financingStatus;
+  if (approved > 0) return `${used}/${approved} جلسة - متبقي ${remaining}`;
+  if (caseItem.totalFinancing) return `${caseItem.totalFinancing} ريال`;
+  return "";
+}
+
+function normalizeName(value: any) {
+  return safeText(value)
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[إأآا]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه");
+}
+
+function getDuplicateReason(newCase: Partial<CaseFormValues>, existingCases: CaseItem[], excludeCaseId?: number) {
+  const newName = normalizeName(newCase.childName);
+  const newFamilyPhone = safePhone(newCase.familyPhone);
+  const newBeneficiaryPhone = safePhone(newCase.beneficiaryPhone);
+  const newBirthDate = newCase.birthDate ? toDateInputValue(newCase.birthDate) : "";
+  const newOrganization = safeText(newCase.organization);
+
+  if (!newName) return "";
+
+  for (const item of existingCases) {
+    if (excludeCaseId && item.id === excludeCaseId) continue;
+
+    const itemName = normalizeName(item.childName);
+    const itemFamilyPhone = safePhone(item.familyPhone || item.phone);
+    const itemBeneficiaryPhone = safePhone(item.beneficiaryPhone);
+    const itemBirthDate = item.birthDate ? toDateInputValue(item.birthDate) : "";
+    const itemOrganization = safeText(item.organization);
+
+    const sameName = itemName === newName;
+    const sameFamilyPhone = Boolean(newFamilyPhone && itemFamilyPhone && newFamilyPhone === itemFamilyPhone);
+    const sameBeneficiaryPhone = Boolean(newBeneficiaryPhone && itemBeneficiaryPhone && newBeneficiaryPhone === itemBeneficiaryPhone);
+    const sameBirthDate = Boolean(newBirthDate && itemBirthDate && newBirthDate === itemBirthDate);
+    const sameOrganization = Boolean(newOrganization && itemOrganization && newOrganization === itemOrganization);
+
+    if (sameName && (sameFamilyPhone || sameBeneficiaryPhone)) {
+      return "يوجد مستفيد بنفس الاسم ورقم الجوال. لا يمكن إضافة الحالة مرتين.";
+    }
+
+    if (sameName && sameBirthDate) {
+      return "يوجد مستفيد بنفس الاسم وتاريخ الميلاد. لا يمكن إضافة الحالة مرتين.";
+    }
+
+    if (sameName && sameOrganization) {
+      return "قد تكون هذه الحالة مكررة داخل نفس الجمعية.";
+    }
+  }
+
+  return "";
+}
+
+const defaultDiseaseOptions = [
+  "توحد",
+  "تأخر نطق",
+  "فرط حركة وتشتت انتباه",
+  "صعوبات تعلم",
+  "إعاقة سمعية",
+  "إعاقة بصرية",
+  "إعاقة حركية",
+  "تأخر نمائي",
+  "اضطراب سلوكي",
+  "اضطراب تواصل",
+  "متلازمة داون",
+  "شلل دماغي",
+  "تأخر لغوي",
+  "اضطراب نمائي",
+  "أخرى",
+];
+
+const financialStatusOptions = ["محتاج", "متوسط", "ميسور"];
+
+const organizationOptions = [
+  "جمعية إنماء",
+  "جمعية الأشخاص ذوي الإعاقة بالأحساء",
+  "جمعية رعاية الطفولة",
+  "جمعية ذوي الإعاقة الخيرية جذا",
+  "جمعية طفولة آمنة",
+  "جمعية إسناد",
+  "جمعية ذوي اضطراب طيف التوحد لدن",
+  "جمعية خطى التوحد",
+  "جمعية التدخل المبكر",
+  "جمعية الأطفال المعوقين",
+  "جمعية عزم",
+  "جمعية همم لأسر ذوي الإعاقة",
+];
+
+function readDiseaseOptions() {
+  try {
+    const raw = localStorage.getItem(DISEASE_OPTIONS_STORAGE_KEY);
+    const stored = raw ? JSON.parse(raw) : [];
+    const list = Array.isArray(stored) ? stored : [];
+    return Array.from(new Set([...defaultDiseaseOptions, ...list].filter(Boolean)));
+  } catch {
+    return defaultDiseaseOptions;
+  }
+}
+
+function saveDiseaseOptions(options: string[]) {
+  const cleaned = Array.from(new Set(options.map((item) => safeText(item)).filter(Boolean)));
+  localStorage.setItem(DISEASE_OPTIONS_STORAGE_KEY, JSON.stringify(cleaned));
+  window.dispatchEvent(new CustomEvent("anma-disease-options-updated", { detail: cleaned }));
+  window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
+}
 
 function readCaseSmartSyncMap(): Record<string, StoredCaseSmartSync> {
   try {
@@ -146,21 +333,6 @@ function getStoredSessionCount(caseId?: number) {
   const count = Number(stored?.sessionsCount ?? stored?.totalSessions ?? 0);
   return Number.isFinite(count) ? count : 0;
 }
-
-const organizationOptions = [
-  "جمعية إنماء",
-  "جمعية الأشخاص ذوي الإعاقة بالأحساء",
-  "جمعية رعاية الطفولة",
-  "جمعية ذوي الإعاقة الخيرية جذا",
-  "جمعية طفولة آمنة",
-  "جمعية إسناد",
-  "جمعية ذوي اضطراب طيف التوحد لدن",
-  "جمعية خطى التوحد",
-  "جمعية التدخل المبكر",
-  "جمعية الأطفال المعوقين",
-  "جمعية عزم",
-  "جمعية همم لأسر ذوي الإعاقة",
-];
 
 function safeText(value: any) {
   return String(value ?? "").trim();
@@ -186,8 +358,6 @@ function getStatusBadgeClass(status: string) {
       return "bg-muted text-foreground";
   }
 }
-
-type SmartLevel = "غير محدد" | "ممتاز" | "متابعة" | "خطر";
 
 function getSmartLevelBadgeClass(level: SmartLevel) {
   switch (level) {
@@ -337,7 +507,6 @@ function uniqueCasesByBeneficiary(cases: CaseItem[]) {
   return Array.from(map.values());
 }
 
-
 function excelDateToJSDate(value: any) {
   if (!value) return undefined;
 
@@ -380,7 +549,35 @@ function toDateInputValue(value?: Date | string) {
   return date.toISOString().split("T")[0];
 }
 
-function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
+function getRowValue(row: any, keys: string[]) {
+  for (const key of keys) {
+    const value = safeText(row[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function isSameNormalized(a: any, b: any) {
+  return Boolean(normalizeName(a) && normalizeName(a) === normalizeName(b));
+}
+
+
+type CaseFieldsProps = {
+  form: UseFormReturn<CaseFormValues>;
+  diseaseOptions: string[];
+  specialistOptions: DoctorOption[];
+  organizationOptionsList: OrganizationOption[];
+};
+
+function CaseFields({ form, diseaseOptions, specialistOptions, organizationOptionsList }: CaseFieldsProps) {
+  const selectedOrganizationId = form.watch("organizationId");
+  const filteredSpecialists = selectedOrganizationId
+    ? specialistOptions.filter(
+        (doctor) =>
+          !doctor.organizationId ||
+          Number(doctor.organizationId) === Number(selectedOrganizationId)
+      )
+    : specialistOptions;
   return (
     <>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -400,23 +597,44 @@ function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
 
         <FormField
           control={form.control}
-          name="organization"
+          name="organizationId"
           render={({ field }) => (
             <FormItem>
               <FormLabel>اسم الجمعية</FormLabel>
-              <FormControl>
-                <Input
-                  list="organizations-list"
-                  placeholder="اكتب أو اختر اسم الجمعية"
-                  className={lightInputClass}
-                  {...field}
-                />
-              </FormControl>
-              <datalist id="organizations-list">
-                {organizationOptions.map((org) => (
-                  <option key={org} value={org} />
-                ))}
-              </datalist>
+              <Select
+                value={field.value ? String(field.value) : "__none"}
+                onValueChange={(value) => {
+                  if (value === "__none") {
+                    field.onChange(null);
+                    form.setValue("doctorId", null);
+                    form.setValue("specialistName", "");
+                    return;
+                  }
+
+                  const selectedOrganization = organizationOptionsList.find(
+                    (organization) => String(organization.id) === value
+                  );
+
+                  field.onChange(Number(value));
+                  form.setValue("organization", selectedOrganization?.name || "");
+                  form.setValue("doctorId", null);
+                  form.setValue("specialistName", "");
+                }}
+              >
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختاري الجمعية" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="__none">غير محدد</SelectItem>
+                  {organizationOptionsList.map((organization) => (
+                    <SelectItem key={organization.id} value={String(organization.id)}>
+                      {organization.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <FormMessage />
             </FormItem>
           )}
@@ -500,14 +718,18 @@ function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
           name="age"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>العمر</FormLabel>
+              <FormLabel>العمر <span className="text-xs text-muted-foreground">(اختياري)</span></FormLabel>
               <FormControl>
                 <Input
-                  type="number"
-                  min="0"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="مثال: 6"
                   className={lightInputClass}
                   value={field.value ?? ""}
-                  onChange={(e) => field.onChange(Number(e.target.value))}
+                  onChange={(e) => {
+                    const value = e.target.value.replace(/[^\d]/g, "");
+                    field.onChange(value ? Number(value) : 0);
+                  }}
                 />
               </FormControl>
               <FormMessage />
@@ -520,10 +742,25 @@ function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
           name="disabilityType"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>نوع الإعاقة</FormLabel>
-              <FormControl>
-                <Input placeholder="نوع الإعاقة" className={lightInputClass} {...field} />
-              </FormControl>
+              <FormLabel>نوع الإعاقة / المرض</FormLabel>
+              <Select
+                value={field.value || "__none"}
+                onValueChange={(value) => field.onChange(value === "__none" ? "" : value)}
+              >
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختاري نوع الإعاقة أو المرض" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="__none">غير محدد</SelectItem>
+                  {diseaseOptions.map((disease) => (
+                    <SelectItem key={disease} value={disease}>
+                      {disease}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <FormMessage />
             </FormItem>
           )}
@@ -534,10 +771,67 @@ function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
           name="financialStatus"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>الحالة المادية</FormLabel>
-              <FormControl>
-                <Input placeholder="مثال: محتاج / متوسط / ميسور" className={lightInputClass} {...field} />
-              </FormControl>
+              <FormLabel>الحالة المادية <span className="text-xs text-muted-foreground">(اختياري)</span></FormLabel>
+              <Select
+                value={field.value || "__none"}
+                onValueChange={(value) => field.onChange(value === "__none" ? "" : value)}
+              >
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختياري" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="__none">غير محدد</SelectItem>
+                  {financialStatusOptions.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {status}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="doctorId"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>المختص المسؤول <span className="text-xs text-muted-foreground">(اختياري)</span></FormLabel>
+              <Select
+                value={field.value ? String(field.value) : "__none"}
+                onValueChange={(value) => {
+                  if (value === "__none") {
+                    field.onChange(null);
+                    form.setValue("specialistName", "");
+                    return;
+                  }
+
+                  const selected = specialistOptions.find(
+                    (doctor) => String(doctor.id) === value
+                  );
+
+                  field.onChange(Number(value));
+                  form.setValue("specialistName", selected?.name || "");
+                }}
+              >
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختاري المختص أو اتركيه بدون مختص" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="__none">بدون مختص</SelectItem>
+                  {filteredSpecialists.map((doctor) => (
+                    <SelectItem key={doctor.id} value={String(doctor.id)}>
+                      {doctor.name}{doctor.specialty ? ` - ${doctor.specialty}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <FormMessage />
             </FormItem>
           )}
@@ -569,7 +863,11 @@ function CaseFields({ form }: { form: UseFormReturn<CaseFormValues> }) {
 export default function CasesManagement() {
   const [searchTerm, setSearchTerm] = useState("");
   const [organizationFilter, setOrganizationFilter] = useState("all");
+  const [disabilityFilter, setDisabilityFilter] = useState("all");
   const [smartLevelFilter, setSmartLevelFilter] = useState("all");
+  const [specialistFilter, setSpecialistFilter] = useState("all");
+  const [diseaseOptions, setDiseaseOptions] = useState<string[]>(() => readDiseaseOptions());
+  const [newDisease, setNewDisease] = useState("");
   const [smartSyncTick, setSmartSyncTick] = useState(0);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -580,16 +878,32 @@ export default function CasesManagement() {
     refetchInterval: 3000,
   });
 
+  const doctorsQuery = trpc.doctors.list.useQuery(undefined, {
+    refetchInterval: 5000,
+  });
+
+  const organizationsQuery = trpc.organizations.list.useQuery(undefined, {
+    refetchInterval: 5000,
+  });
+
   useEffect(() => {
     const refreshSmartSync = () => setSmartSyncTick((value) => value + 1);
+    const refreshDiseaseOptions = () => setDiseaseOptions(readDiseaseOptions());
+
     window.addEventListener("anma-case-smart-sync-updated", refreshSmartSync as EventListener);
+    window.addEventListener("anma-disease-options-updated", refreshDiseaseOptions as EventListener);
+    window.addEventListener("anma-clinical-reports-updated", refreshSmartSync as EventListener);
     window.addEventListener("storage", refreshSmartSync);
+    window.addEventListener("storage", refreshDiseaseOptions);
 
     const interval = window.setInterval(refreshSmartSync, 3000);
 
     return () => {
       window.removeEventListener("anma-case-smart-sync-updated", refreshSmartSync as EventListener);
+      window.removeEventListener("anma-disease-options-updated", refreshDiseaseOptions as EventListener);
+      window.removeEventListener("anma-clinical-reports-updated", refreshSmartSync as EventListener);
       window.removeEventListener("storage", refreshSmartSync);
+      window.removeEventListener("storage", refreshDiseaseOptions);
       window.clearInterval(interval);
     };
   }, []);
@@ -604,6 +918,9 @@ export default function CasesManagement() {
     disabilityType: "",
     financialStatus: "",
     organization: "",
+    organizationId: null,
+    specialistName: "",
+    doctorId: null,
     notes: "",
   };
 
@@ -617,14 +934,53 @@ export default function CasesManagement() {
     defaultValues,
   });
 
+  const organizationOptionsList = useMemo<OrganizationOption[]>(() => {
+    const fromBackend = ((organizationsQuery.data || []) as any[])
+      .map((organization) => ({
+        id: Number(organization.id),
+        name: String(organization.name || ""),
+        city: String(organization.city || ""),
+        status: organization.status,
+      }))
+      .filter((organization) => organization.name && organization.status !== "موقوفة");
+
+    if (fromBackend.length) return fromBackend;
+
+    return organizationOptions.map((name, index) => ({
+      id: index + 1,
+      name,
+      city: "",
+      status: "نشطة",
+    }));
+  }, [organizationsQuery.data]);
+
+  const specialistOptions = useMemo<DoctorOption[]>(() => {
+    return ((doctorsQuery.data || []) as any[])
+      .filter((doctor) => doctor.status !== "موقوف")
+      .map((doctor) => ({
+        id: Number(doctor.id),
+        name: String(doctor.name || ""),
+        specialty: String(doctor.specialty || ""),
+        status: doctor.status,
+        organizationId: doctor.organizationId ? Number(doctor.organizationId) : null,
+        organization: String(doctor.organization || ""),
+      }))
+      .filter((doctor) => doctor.name);
+  }, [doctorsQuery.data]);
+
+  const notifyDashboard = () => {
+    window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
+  };
+
   const createCaseMutation = trpc.cases.create.useMutation({
     onSuccess: () => {
       toast.success("تم إضافة الحالة بنجاح");
       void casesQuery.refetch();
+      notifyDashboard();
       setIsCreateDialogOpen(false);
       createForm.reset(defaultValues);
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(error.message || "حدث خطأ في إضافة الحالة");
     },
   });
@@ -633,10 +989,11 @@ export default function CasesManagement() {
     onSuccess: () => {
       toast.success("تم تعديل الحالة بنجاح");
       void casesQuery.refetch();
+      notifyDashboard();
       setIsEditDialogOpen(false);
       setSelectedCase(null);
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(error.message || "حدث خطأ في تعديل الحالة");
     },
   });
@@ -645,34 +1002,78 @@ export default function CasesManagement() {
     onSuccess: () => {
       toast.success("تم حذف الحالة وجميع بياناتها المرتبطة");
       void casesQuery.refetch();
+      notifyDashboard();
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(error.message || "حدث خطأ في حذف الحالة");
     },
   });
+
+  const addDiseaseOption = () => {
+    const value = safeText(newDisease);
+
+    if (!value) {
+      toast.error("اكتبي اسم المرض أو نوع الإعاقة");
+      return;
+    }
+
+    if (diseaseOptions.includes(value)) {
+      toast.error("هذا المرض موجود مسبقاً");
+      return;
+    }
+
+    const next = [...diseaseOptions, value];
+    setDiseaseOptions(next);
+    saveDiseaseOptions(next);
+    setNewDisease("");
+    toast.success("تمت إضافة المرض للقائمة");
+  };
 
   const buildCasePayload = (values: Partial<CaseFormValues>, index?: number) => {
     const familyPhone = safePhone(values.familyPhone);
     const beneficiaryPhone = safePhone(values.beneficiaryPhone);
     const caseNumber = selectedCase?.caseNumber || `CASE-${Date.now()}-${index ?? 0}`;
+    const disability = safeText(values.disabilityType);
+    const selectedOrganization = organizationOptionsList.find(
+      (organization) => Number(organization.id) === Number(values.organizationId)
+    );
+
+    const selectedDoctor = specialistOptions.find(
+      (doctor) =>
+        Number(doctor.id) === Number(values.doctorId) ||
+        doctor.name === safeText(values.specialistName)
+    );
+
+    const selectedOrganizationName =
+      selectedOrganization?.name || safeText(values.organization) || "";
+    const rawChildName = safeText(values.childName);
+
+    const safeChildName =
+      rawChildName && !isSameNormalized(rawChildName, selectedOrganizationName)
+        ? rawChildName
+        : selectedCase?.childName || "غير محدد";
 
     return {
       caseNumber,
-      childName: safeText(values.childName) || "غير محدد",
+      childName: safeChildName,
       familyPhone,
       beneficiaryPhone,
       phone: familyPhone || beneficiaryPhone,
       gender: values.gender || "غير محدد",
       birthDate: values.birthDate,
       age: Number(values.age || 0),
-      disabilityType: safeText(values.disabilityType),
+      disabilityType: disability,
       financialStatus: safeText(values.financialStatus),
-      organization: safeText(values.organization) || "غير محدد",
+      organization: selectedOrganization?.name || safeText(values.organization) || "غير محدد",
+      organizationId: selectedOrganization?.id ?? values.organizationId ?? selectedCase?.organizationId ?? null,
       notes: safeText(values.notes),
 
-      city: selectedCase?.city || "غير محدد",
-      disorderType: safeText(values.disabilityType) || selectedCase?.disorderType || "غير محدد",
-      specialist: selectedCase?.specialist || "غير محدد",
+      city: selectedCase?.city || selectedOrganization?.city || "غير محدد",
+      disorderType: disability || selectedCase?.disorderType || "غير محدد",
+      doctorId: selectedDoctor?.id ?? values.doctorId ?? selectedCase?.doctorId ?? null,
+      specialist: selectedDoctor?.name || safeText(values.specialistName) || selectedCase?.specialist || "غير محدد",
+      specialistName: selectedDoctor?.name || safeText(values.specialistName) || selectedCase?.specialistName || "غير محدد",
+      specialistSpecialty: selectedDoctor?.specialty || selectedCase?.specialistSpecialty || "",
       referralType: selectedCase?.referralType || "تكاملية",
       referralDate: selectedCase?.referralDate || new Date(),
       status: selectedCase?.status || "جديدة",
@@ -683,15 +1084,22 @@ export default function CasesManagement() {
     void smartSyncTick;
     return ((casesQuery.data || []) as CaseItem[]).map((item) => {
       const stored = getStoredCaseSmartSync(item.id);
-      if (!stored) return item;
-
-      const storedCount = Number(stored.sessionsCount ?? stored.totalSessions ?? 0);
+      const reports = getClinicalReportsByCase(item.id);
+      const storedCount = Number(stored?.sessionsCount ?? stored?.totalSessions ?? 0);
+      const latestRecommendation = getLatestReportRecommendation(item.id);
 
       return {
         ...item,
         sessionsCount: Math.max(Number(item.sessionsCount || 0), Number.isFinite(storedCount) ? storedCount : 0),
         totalSessions: Math.max(Number(item.totalSessions || 0), Number.isFinite(storedCount) ? storedCount : 0),
-        lastSessionDate: item.lastSessionDate || stored.lastSessionDate,
+        lastSessionDate: item.lastSessionDate || stored?.lastSessionDate,
+        reportsCount: reports.length,
+        lastReportDate: getLatestReportDate(item.id),
+        progressScore: Number(stored?.improvement ?? item.progressScore ?? 0),
+        smartRecommendation: latestRecommendation || stored?.recommendation || item.smartRecommendation || "",
+        riskLevel: stored?.smartLevel || item.riskLevel,
+        financingStatus: getCaseFundingSummary(item) || item.financingStatus,
+        remainingSessions: Number(item.remainingSessions || 0),
       };
     });
   }, [casesQuery.data, smartSyncTick]);
@@ -712,29 +1120,120 @@ export default function CasesManagement() {
         return;
       }
 
-      rows.forEach((row, index) => {
-        const birthDate = excelDateToJSDate(row["تاريخ الميلاد"]);
+      const pendingCases: CaseItem[] = [...allCases];
+      const newDiseaseSet = new Set(diseaseOptions);
+      let importedCount = 0;
+      let skippedCount = 0;
 
-        const payload = buildCasePayload(
-          {
-            childName: safeText(row["الاسم"] || row.name || row.childName),
-            familyPhone: safePhone(row["رقم جوال الأسرة"] || row["رقم جوال الأسرة"] || row.familyPhone),
-            beneficiaryPhone: safePhone(row["رقم جوال المستفيد"] || row["رقم جوال المستفيد"] || row.beneficiaryPhone),
-            gender: normalizeGender(row["الجنس"] || row.gender),
-            birthDate,
-            age: Number(row["العمر"] || row.age || calculateAgeFromBirthDate(birthDate)),
-            disabilityType: safeText(row["نوع الإعاقة"] || row.disabilityType),
-            financialStatus: safeText(row["الحالة المادية"] || row.financialStatus),
-            notes: safeText(row["ملاحظات"] || row.notes),
-            organization: safeText(row["اسم الجمعية"] || row["الجمعية"] || row.organization) || "غير محدد",
-          },
-          index
+      for (const row of rows) {
+        const birthDate = excelDateToJSDate(row["تاريخ الميلاد"]);
+        const disability = safeText(
+          row["نوع الإعاقة"] ||
+            row["المرض"] ||
+            row["التشخيص"] ||
+            row.disabilityType
         );
 
-        createCaseMutation.mutate(payload);
-      });
+        if (disability) newDiseaseSet.add(disability);
 
-      toast.success(`تم استيراد ${rows.length} حالة من Excel`);
+        const organizationName = getRowValue(row, [
+          "اسم الجمعية",
+          "الجمعية",
+          "جمعية",
+          "organization",
+        ]);
+
+        const matchedOrganization = organizationOptionsList.find(
+          (organization) =>
+            normalizeName(organization.name) === normalizeName(organizationName)
+        );
+
+        const specialistName = getRowValue(row, [
+          "اسم المختص",
+          "الأخصائي",
+          "الاخصائي",
+          "المختص",
+          "specialistName",
+          "specialist",
+        ]);
+
+        const matchedDoctor = specialistOptions.find((doctor) => {
+          const sameName = normalizeName(doctor.name) === normalizeName(specialistName);
+          const sameOrganization =
+            !matchedOrganization?.id ||
+            !doctor.organizationId ||
+            Number(doctor.organizationId) === Number(matchedOrganization.id);
+
+          return sameName && sameOrganization;
+        });
+
+        const payload = buildCasePayload({
+          childName: getRowValue(row, [
+            "اسم المستفيد",
+            "اسم الطفل",
+            "اسم الحالة",
+            "الطفل",
+            "المستفيد",
+            "الاسم",
+            "name",
+            "childName",
+          ]),
+          familyPhone: safePhone(row["رقم جوال الأسرة"] || row.familyPhone),
+          beneficiaryPhone: safePhone(row["رقم جوال المستفيد"] || row.beneficiaryPhone),
+          gender: normalizeGender(row["الجنس"] || row.gender),
+          birthDate,
+          age: Number(row["العمر"] || row.age || calculateAgeFromBirthDate(birthDate)),
+          disabilityType: disability,
+          financialStatus: safeText(row["الحالة المادية"] || row.financialStatus),
+          organization: matchedOrganization?.name || organizationName || "غير محدد",
+          organizationId: matchedOrganization?.id ?? null,
+          specialistName: matchedDoctor?.name || specialistName,
+          doctorId: matchedDoctor?.id ?? null,
+          notes: safeText(row["ملاحظات"] || row.notes),
+        }, importedCount);
+
+        if (!safeText(payload.childName) || payload.childName === "غير محدد") {
+          skippedCount += 1;
+          console.warn("Skipped case without child name:", row);
+          continue;
+        }
+
+        if (isSameNormalized(payload.childName, payload.organization)) {
+          skippedCount += 1;
+          console.warn("Skipped row because child name equals organization:", row);
+          continue;
+        }
+
+        const duplicateReason = getDuplicateReason(payload, pendingCases);
+
+        if (duplicateReason) {
+          skippedCount += 1;
+          console.warn("Skipped duplicate case:", payload.childName, duplicateReason);
+          continue;
+        }
+
+        pendingCases.push({
+          ...payload,
+          id: Date.now() + importedCount,
+          status: payload.status || "جديدة",
+          referralDate: payload.referralDate || new Date(),
+        } as CaseItem);
+
+        createCaseMutation.mutate(payload);
+        importedCount += 1;
+      }
+
+      const nextDiseases = Array.from(newDiseaseSet);
+      setDiseaseOptions(nextDiseases);
+      saveDiseaseOptions(nextDiseases);
+
+      if (importedCount > 0) {
+        toast.success(`تم استيراد ${importedCount} حالة، وتم تجاهل ${skippedCount} حالة مكررة`);
+      } else {
+        toast.error(`لم يتم استيراد حالات جديدة. تم تجاهل ${skippedCount} حالة مكررة`);
+      }
+
+      notifyDashboard();
     } catch (error) {
       console.error("Excel upload error:", error);
       toast.error("حدث خطأ أثناء قراءة ملف Excel");
@@ -744,7 +1243,7 @@ export default function CasesManagement() {
   const downloadTemplate = () => {
     const casesSheet = [
       {
-        الاسم: "محمد أحمد علي",
+        "اسم المستفيد": "محمد أحمد علي",
         "رقم جوال الأسرة": "05XXXXXXXX",
         "رقم جوال المستفيد": "05XXXXXXXX",
         الجنس: "ذكر",
@@ -752,13 +1251,17 @@ export default function CasesManagement() {
         العمر: 6,
         "نوع الإعاقة": "إعاقة سمعية",
         "الحالة المادية": "متوسط",
+        "اسم المختص": "د. خالد الرفاعي",
         ملاحظات: "ملاحظات إضافية",
         "اسم الجمعية": "جمعية إنماء",
       },
     ];
 
+    const diseasesSheet = diseaseOptions.map((item) => ({ "الأمراض / أنواع الإعاقة": item }));
+
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(casesSheet), "الحالات");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(diseasesSheet), "قائمة الأمراض");
     XLSX.writeFile(workbook, "Anma_Cases_Template.xlsx");
   };
 
@@ -774,16 +1277,20 @@ export default function CasesManagement() {
         "رقم جوال المستفيد": safePhone(item.beneficiaryPhone),
         الجنس: item.gender || "غير محدد",
         "تاريخ الميلاد": item.birthDate ? new Date(item.birthDate).toLocaleDateString("ar-SA") : "",
-        العمر: item.age,
+        العمر: item.age || "",
         "نوع الإعاقة": item.disabilityType || item.disorderType || "",
         "الحالة المادية": item.financialStatus || "",
         ملاحظات: item.notes || "",
         "اسم الجمعية": item.organization,
         "اسم الأخصائي": item.specialistName || item.specialist || "",
         "تخصص الأخصائي": item.specialistSpecialty || item.specialty || "",
+        "عدد تقارير المختصين": item.reportsCount || 0,
+        "مؤشر التقدم": item.progressScore ? `${item.progressScore}%` : "",
+        "التمويل": item.financingStatus || "",
+        "آخر توصية": item.smartRecommendation || smart.recommendation,
         "الحالة التشغيلية": getOperationalStatus(item),
         "عدد الجلسات": getCaseSessionsCount(item),
-        "التصنيف الذكي": smart.level,
+        "التصنيف الذكي": item.riskLevel || smart.level,
         "سبب التصنيف": smart.reason,
         "التوصية": smart.recommendation,
         "اكتمال البيانات": `${smart.completeness}%`,
@@ -796,11 +1303,35 @@ export default function CasesManagement() {
   };
 
   const onCreateSubmit = (values: CaseFormValues) => {
+    const duplicateReason = getDuplicateReason(values, allCases);
+
+    if (duplicateReason.includes("لا يمكن")) {
+      toast.error(duplicateReason);
+      return;
+    }
+
+    if (duplicateReason) {
+      const proceed = confirm(`${duplicateReason}\nهل تريدين المتابعة رغم احتمال التكرار؟`);
+      if (!proceed) return;
+    }
+
     createCaseMutation.mutate(buildCasePayload(values));
   };
 
   const onEditSubmit = (values: CaseFormValues) => {
     if (!selectedCase) return;
+
+    const duplicateReason = getDuplicateReason(values, allCases, selectedCase.id);
+
+    if (duplicateReason.includes("لا يمكن")) {
+      toast.error(duplicateReason);
+      return;
+    }
+
+    if (duplicateReason) {
+      const proceed = confirm(`${duplicateReason}\nهل تريدين حفظ التعديل رغم احتمال التكرار؟`);
+      if (!proceed) return;
+    }
 
     updateCaseMutation.mutate({
       id: selectedCase.id,
@@ -821,6 +1352,9 @@ export default function CasesManagement() {
       disabilityType: caseItem.disabilityType || caseItem.disorderType || "",
       financialStatus: caseItem.financialStatus || "",
       organization: caseItem.organization || "",
+      organizationId: caseItem.organizationId ?? null,
+      specialistName: caseItem.specialistName || caseItem.specialist || "",
+      doctorId: caseItem.doctorId ?? null,
       notes: caseItem.notes || "",
     });
 
@@ -837,9 +1371,29 @@ export default function CasesManagement() {
   };
 
   const availableOrganizations = useMemo(() => {
+    const fromBackend = organizationOptionsList.map((item) => item.name).filter(Boolean);
     const fromCases = allCases.map((item) => item.organization).filter(Boolean);
-    return Array.from(new Set([...organizationOptions, ...fromCases]));
-  }, [allCases]);
+    return Array.from(new Set([...fromBackend, ...fromCases]));
+  }, [allCases, organizationOptionsList]);
+
+  const availableSpecialists = useMemo(() => {
+    const fromDoctors = specialistOptions.map((item) => item.name).filter(Boolean);
+    const fromCases = allCases
+      .map((item) => item.specialistName || item.specialist)
+      .filter(Boolean)
+      .map((item) => safeText(item));
+
+    return Array.from(new Set([...fromDoctors, ...fromCases].filter(Boolean)));
+  }, [allCases, specialistOptions]);
+
+  const availableDiseases = useMemo(() => {
+    const fromCases = allCases
+      .map((item) => item.disabilityType || item.disorderType)
+      .filter(Boolean)
+      .map((item) => safeText(item));
+
+    return Array.from(new Set([...diseaseOptions, ...fromCases].filter(Boolean)));
+  }, [allCases, diseaseOptions]);
 
   const organizationStats = useMemo(() => {
     const statsMap = new Map<string, number>();
@@ -852,6 +1406,21 @@ export default function CasesManagement() {
 
     return Array.from(statsMap.entries()).map(([organization, count]) => ({
       organization,
+      count,
+    }));
+  }, [allCases]);
+
+  const diseaseStats = useMemo(() => {
+    const statsMap = new Map<string, number>();
+
+    allCases.forEach((item) => {
+      const disease = item.disabilityType || item.disorderType || "غير محدد";
+      const current = statsMap.get(disease) || 0;
+      statsMap.set(disease, current + 1);
+    });
+
+    return Array.from(statsMap.entries()).map(([disease, count]) => ({
+      disease,
       count,
     }));
   }, [allCases]);
@@ -873,14 +1442,17 @@ export default function CasesManagement() {
 
   const filteredCases = allCases.filter((item) => {
     const search = searchTerm.trim().toLowerCase();
+    const disability = item.disabilityType || item.disorderType || "غير محدد";
+
     const searchableText = [
       item.childName,
       item.familyPhone,
       item.beneficiaryPhone,
       item.phone,
       item.organization,
-      item.disabilityType,
-      item.disorderType,
+      item.specialistName,
+      item.specialist,
+      disability,
       item.financialStatus,
       item.notes,
       item.status,
@@ -892,104 +1464,134 @@ export default function CasesManagement() {
     const matchesOrganization =
       organizationFilter === "all" || item.organization === organizationFilter;
 
+    const matchesDisability =
+      disabilityFilter === "all" || disability === disabilityFilter;
+
     const smartAssessment = getSmartCaseAssessment(item);
+    const specialistName = safeText(item.specialistName || item.specialist || "بدون مختص");
+    const matchesSpecialist =
+      specialistFilter === "all" ||
+      (specialistFilter === "__none" && (!specialistName || specialistName === "غير محدد" || specialistName === "بدون مختص")) ||
+      specialistName === specialistFilter;
+
     const matchesSmartLevel =
       smartLevelFilter === "all" || smartAssessment.level === smartLevelFilter;
 
-    return matchesSearch && matchesOrganization && matchesSmartLevel;
+    return matchesSearch && matchesOrganization && matchesDisability && matchesSpecialist && matchesSmartLevel;
   });
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#F8FAFC] p-4 md:p-8">
-      <div className="mx-auto max-w-7xl">
-        <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h1 className="mb-2 text-3xl font-bold text-[#1F2937]">إدارة الحالات</h1>
-            <p className="text-muted-foreground">
-              نظام ذكي لإدارة الحالات يشبه أنظمة المستشفيات: فرز، متابعة، تنبيهات، وتصدير منظم
-            </p>
+    <div dir="rtl" className="min-h-screen bg-slate-50 p-4 md:p-6">
+      <div className="mx-auto max-w-7xl space-y-5">
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1 text-xs font-bold text-orange-700">
+                <Users className="h-4 w-4" />
+                Case Management
+              </div>
+
+              <h1 className="text-2xl font-black text-slate-900">
+                إدارة الحالات
+              </h1>
+
+              <p className="mt-1 text-sm text-slate-500">
+                متابعة الحالات، المختصين، التقارير، الجلسات، والتمويل من مكان واحد.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <input
+                id="excelUpload"
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.[0]) {
+                    void handleExcelUpload(e.target.files[0]);
+                    e.target.value = "";
+                  }
+                }}
+              />
+
+              <Button variant="outline" className="rounded-2xl" onClick={downloadTemplate}>
+                <FileSpreadsheet className="ml-2 h-4 w-4" />
+                قالب Excel
+              </Button>
+
+              <Button
+                variant="outline"
+                className="rounded-2xl"
+                onClick={() => document.getElementById("excelUpload")?.click()}
+              >
+                <Upload className="ml-2 h-4 w-4" />
+                استيراد
+              </Button>
+
+              <Button variant="outline" className="rounded-2xl" onClick={exportCasesExcel}>
+                <Download className="ml-2 h-4 w-4" />
+                تصدير
+              </Button>
+
+              <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button className="rounded-2xl bg-orange-600 font-bold text-white hover:bg-orange-700">
+                    <Plus className="ml-2 h-4 w-4" />
+                    حالة جديدة
+                  </Button>
+                </DialogTrigger>
+
+                <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto rounded-3xl" dir="rtl">
+                  <DialogHeader>
+                    <DialogTitle>إضافة حالة جديدة</DialogTitle>
+                    <DialogDescription>
+                      أدخلي البيانات الأساسية للحالة وربطها بالجمعية والمختص.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <Form {...createForm}>
+                    <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
+                      <CaseFields
+                        form={createForm}
+                        diseaseOptions={availableDiseases}
+                        specialistOptions={specialistOptions}
+                        organizationOptionsList={organizationOptionsList}
+                      />
+
+                      <Button
+                        type="submit"
+                        className="w-full rounded-2xl bg-orange-600 hover:bg-orange-700"
+                        disabled={createCaseMutation.isPending}
+                      >
+                        {createCaseMutation.isPending ? "جاري الإضافة..." : "حفظ الحالة"}
+                      </Button>
+                    </form>
+                  </Form>
+                </DialogContent>
+              </Dialog>
+            </div>
           </div>
-
-          <div className="flex flex-wrap gap-2">
-            <input
-              id="excelUpload"
-              type="file"
-              accept=".xlsx,.xls"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files?.[0]) {
-                  void handleExcelUpload(e.target.files[0]);
-                  e.target.value = "";
-                }
-              }}
-            />
-
-            <Button variant="outline" onClick={downloadTemplate}>
-              <FileSpreadsheet className="ml-2 h-4 w-4" />
-              تحميل قالب Excel
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={() => document.getElementById("excelUpload")?.click()}
-            >
-              <Upload className="ml-2 h-4 w-4" />
-              استيراد Excel
-            </Button>
-
-            <Button variant="outline" onClick={exportCasesExcel}>
-              <Download className="ml-2 h-4 w-4" />
-              تصدير Excel
-            </Button>
-
-            <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-              <DialogTrigger asChild>
-                <Button className="bg-orange-600 text-white hover:bg-orange-700">
-                  <Plus className="ml-2 h-4 w-4" />
-                  إضافة حالة
-                </Button>
-              </DialogTrigger>
-
-              <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto" dir="rtl">
-                <DialogHeader>
-                  <DialogTitle>إضافة حالة جديدة</DialogTitle>
-                  <DialogDescription>
-                    أدخل بيانات الحالة حسب ملف Excel المعتمد
-                  </DialogDescription>
-                </DialogHeader>
-
-                <Form {...createForm}>
-                  <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
-                    <CaseFields form={createForm} />
-
-                    <Button
-                      type="submit"
-                      className="w-full bg-orange-600 hover:bg-orange-700"
-                      disabled={createCaseMutation.isPending}
-                    >
-                      {createCaseMutation.isPending ? "جاري الإضافة..." : "حفظ الحالة"}
-                    </Button>
-                  </form>
-                </Form>
-              </DialogContent>
-            </Dialog>
-          </div>
-        </div>
+        </section>
 
         <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-          <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto" dir="rtl">
+          <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto rounded-3xl" dir="rtl">
             <DialogHeader>
               <DialogTitle>تعديل الحالة</DialogTitle>
-              <DialogDescription>عدلي بيانات الحالة ثم احفظي التغييرات</DialogDescription>
+              <DialogDescription>عدلي بيانات الحالة ثم احفظي التغييرات.</DialogDescription>
             </DialogHeader>
 
             <Form {...editForm}>
               <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
-                <CaseFields form={editForm} />
+                <CaseFields
+                  form={editForm}
+                  diseaseOptions={availableDiseases}
+                  specialistOptions={specialistOptions}
+                  organizationOptionsList={organizationOptionsList}
+                />
 
                 <Button
                   type="submit"
-                  className="w-full bg-orange-600 hover:bg-orange-700"
+                  className="w-full rounded-2xl bg-orange-600 hover:bg-orange-700"
                   disabled={updateCaseMutation.isPending}
                 >
                   {updateCaseMutation.isPending ? "جاري الحفظ..." : "حفظ التعديلات"}
@@ -999,242 +1601,302 @@ export default function CasesManagement() {
           </DialogContent>
         </Dialog>
 
-        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Users className="h-5 w-5 text-orange-600" />
-                إجمالي الحالات
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-orange-600">{allCases.length}</div>
-              <p className="mt-1 text-sm text-muted-foreground">حالة مسجلة في النظام</p>
-            </CardContent>
-          </Card>
+        <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {[
+            { title: "الحالات", value: allCases.length, tone: "bg-white text-slate-900", icon: Users },
+            { title: "الجمعيات", value: organizationStats.length, tone: "bg-blue-50 text-blue-700", icon: Building2 },
+            { title: "الأمراض", value: diseaseStats.length, tone: "bg-white text-slate-900", icon: Activity },
+            { title: "أولوية عالية", value: hospitalSmartStats.urgentCount, tone: "bg-red-50 text-red-700", icon: AlertTriangle },
+            { title: "متابعة", value: hospitalSmartStats.followUpCount, tone: "bg-amber-50 text-amber-700", icon: Clock3 },
+            { title: "اكتمال البيانات", value: `${hospitalSmartStats.averageCompleteness}%`, tone: "bg-green-50 text-green-700", icon: ShieldCheck },
+          ].map((item) => {
+            const Icon = item.icon;
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Building2 className="h-5 w-5 text-orange-600" />
-                عدد الجمعيات
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-orange-600">
-                {organizationStats.length}
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                جمعيات لديها مستفيدون
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg">نتائج البحث الحالية</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-orange-600">{filteredCases.length}</div>
-              <p className="mt-1 text-sm text-muted-foreground">حالة حسب الفلترة</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <AlertTriangle className="h-5 w-5 text-red-600" />
-                عاجلة
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-red-600">{hospitalSmartStats.urgentCount}</div>
-              <p className="mt-1 text-sm text-muted-foreground">لا تظهر إلا بسبب واضح</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Clock3 className="h-5 w-5 text-amber-600" />
-                متابعة
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-amber-600">{hospitalSmartStats.followUpCount}</div>
-              <p className="mt-1 text-sm text-muted-foreground">تحتاج استكمال أو متابعة</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Brain className="h-5 w-5 text-slate-600" />
-                غير محدد
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-slate-600">{hospitalSmartStats.undefinedCount}</div>
-              <p className="mt-1 text-sm text-muted-foreground">لم تبدأ أو بلا بيانات كافية</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card className="mb-6 border-orange-100 bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Activity className="h-5 w-5 text-orange-600" />
-              لوحة فرز ذكية للحالات
-            </CardTitle>
-            <CardDescription>
-              النظام لا يصنف الحالة كخطر إلا عند وجود سبب واضح، والحالات الجديدة تبقى غير محددة حتى تبدأ بيانات الجلسات أو المتابعة.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div className="rounded-2xl border bg-slate-50 p-4">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <ShieldCheck className="h-4 w-4" />
-                  اكتمال البيانات
+            return (
+              <div key={item.title} className={`rounded-2xl border p-4 shadow-sm ${item.tone}`}>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-bold opacity-75">{item.title}</p>
+                  <Icon className="h-4 w-4 opacity-75" />
                 </div>
-                <div className="mt-2 text-2xl font-bold text-[#1F2937]">{hospitalSmartStats.averageCompleteness}%</div>
-                <p className="mt-1 text-xs text-muted-foreground">متوسط اكتمال ملفات الحالات</p>
+                <p className="mt-2 text-2xl font-black">{item.value}</p>
+              </div>
+            );
+          })}
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <div className="rounded-3xl border bg-white p-5 shadow-sm xl:col-span-2">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-black text-slate-900">جاهزية الحالات</h2>
+                <p className="mt-1 text-xs text-slate-500">مؤشرات مختصرة لجودة البيانات والتقارير.</p>
+              </div>
+              <Brain className="h-5 w-5 text-orange-600" />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">مرتبطة بمختص</p>
+                <p className="mt-2 text-2xl font-black text-slate-900">
+                  {allCases.filter((item) => safeText(item.specialistName || item.specialist) && safeText(item.specialistName || item.specialist) !== "غير محدد").length}
+                </p>
               </div>
 
               <div className="rounded-2xl border bg-slate-50 p-4">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <UserCheck className="h-4 w-4" />
-                  تحتاج استكمال بيانات
-                </div>
-                <div className="mt-2 text-2xl font-bold text-amber-600">{hospitalSmartStats.incompleteDataCount}</div>
-                <p className="mt-1 text-xs text-muted-foreground">حالات ناقصة رقم/أخصائي/نوع إعاقة</p>
+                <p className="text-xs text-slate-500">بدون مختص</p>
+                <p className="mt-2 text-2xl font-black text-amber-600">
+                  {allCases.filter((item) => !safeText(item.specialistName || item.specialist) || safeText(item.specialistName || item.specialist) === "غير محدد").length}
+                </p>
               </div>
 
               <div className="rounded-2xl border bg-slate-50 p-4">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Brain className="h-4 w-4" />
-                  قاعدة التصنيف
-                </div>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  بدون جلسات أو بيانات متابعة = غير محدد. لا يتم احتسابها خطر إلا إذا كانت متعثرة أو توجد مؤشرات واضحة.
+                <p className="text-xs text-slate-500">لديها تقارير</p>
+                <p className="mt-2 text-2xl font-black text-emerald-600">
+                  {allCases.filter((item) => Number(item.reportsCount || 0) > 0).length}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">تحتاج استكمال</p>
+                <p className="mt-2 text-2xl font-black text-orange-600">
+                  {hospitalSmartStats.incompleteDataCount}
                 </p>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
 
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg"><Filter className="h-5 w-5 text-orange-600" /> البحث والفلترة الذكية</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col gap-4 md:flex-row">
-              <div className="flex-1">
-                <div className="relative">
-                  <Search className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="ابحث بالاسم، الجوال، نوع الإعاقة، الجمعية..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pr-10 placeholder:text-muted-foreground/40"
-                  />
-                </div>
-              </div>
+          <div className="rounded-3xl border bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-black text-slate-900">إضافة مرض/إعاقة</h2>
+            <p className="mt-1 text-xs text-slate-500">تظهر القائمة في إضافة الحالة والفلاتر.</p>
 
-              <Select value={organizationFilter} onValueChange={setOrganizationFilter}>
-                <SelectTrigger className="w-full md:w-64">
-                  <SelectValue placeholder="فلترة حسب الجمعية" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">جميع الجمعيات</SelectItem>
-                  {availableOrganizations.map((org) => (
-                    <SelectItem key={org} value={org}>
-                      {org}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="mt-4 flex gap-2">
+              <Input
+                placeholder="مثال: تأخر حركي"
+                value={newDisease}
+                onChange={(e) => setNewDisease(e.target.value)}
+                className="rounded-2xl bg-slate-50"
+              />
 
-              <Select value={smartLevelFilter} onValueChange={setSmartLevelFilter}>
-                <SelectTrigger className="w-full md:w-56">
-                  <SelectValue placeholder="فلترة حسب التصنيف" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">كل التصنيفات</SelectItem>
-                  <SelectItem value="غير محدد">غير محدد</SelectItem>
-                  <SelectItem value="متابعة">متابعة</SelectItem>
-                  <SelectItem value="خطر">خطر</SelectItem>
-                  <SelectItem value="ممتاز">ممتاز</SelectItem>
-                </SelectContent>
-              </Select>
+              <Button
+                type="button"
+                onClick={addDiseaseOption}
+                className="rounded-2xl bg-orange-600 text-white hover:bg-orange-700"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
             </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>قاعدة بيانات الحالات</CardTitle>
-            <CardDescription>عدد الحالات: {filteredCases.length}</CardDescription>
-          </CardHeader>
+            <div className="mt-4 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+              {availableDiseases.slice(0, 12).map((disease) => (
+                <span
+                  key={disease}
+                  className="rounded-full border border-orange-100 bg-orange-50 px-3 py-1 text-xs font-bold text-orange-700"
+                >
+                  {disease}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
 
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1200px]">
-                <thead>
-                  <tr className="border-b border-border bg-slate-50">
-                    <th className="px-4 py-3 text-right">الاسم</th>
-                    <th className="px-4 py-3 text-right">رقم جوال الأسرة</th>
-                    <th className="px-4 py-3 text-right">رقم جوال المستفيد</th>
-                    <th className="px-4 py-3 text-right">الجنس</th>
-                    <th className="px-4 py-3 text-right">تاريخ الميلاد</th>
-                    <th className="px-4 py-3 text-right">العمر</th>
-                    <th className="px-4 py-3 text-right">نوع الإعاقة</th>
-                    <th className="px-4 py-3 text-right">الحالة المادية</th>
-                    <th className="px-4 py-3 text-right">اسم الجمعية</th>
-                    <th className="px-4 py-3 text-right">التصنيف الذكي</th>
-                    <th className="px-4 py-3 text-right">اكتمال الملف</th>
-                    <th className="px-4 py-3 text-right">الحالة</th>
-                    <th className="px-4 py-3 text-right">الجلسات</th>
-                    <th className="px-4 py-3 text-right">ملاحظات</th>
-                    <th className="px-4 py-3 text-right">الإجراءات</th>
-                  </tr>
-                </thead>
+        <section className="rounded-3xl border bg-white p-5 shadow-sm">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+            <div className="relative">
+              <Search className="absolute right-3 top-3 h-4 w-4 text-slate-400" />
+              <Input
+                placeholder="ابحث بالاسم، الجوال، المرض، الجمعية..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="rounded-2xl bg-slate-50 pr-10"
+              />
+            </div>
 
-                <tbody>
-                  {filteredCases.map((caseItem) => {
-                    const smart = getSmartCaseAssessment(caseItem);
-                    const operationalStatus = getOperationalStatus(caseItem);
-                    const sessionsCount = getCaseSessionsCount(caseItem);
+            <Select value={organizationFilter} onValueChange={setOrganizationFilter}>
+              <SelectTrigger className="rounded-2xl bg-slate-50">
+                <SelectValue placeholder="الجمعية" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الجمعيات</SelectItem>
+                {availableOrganizations.map((org) => (
+                  <SelectItem key={org} value={org}>{org}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-                    return (
-                    <tr key={caseItem.id} className="border-b hover:bg-orange-50/40">
-                      <td className="px-4 py-3 font-medium">{caseItem.childName}</td>
-                      <td className="px-4 py-3">{safePhone(caseItem.familyPhone || caseItem.phone) || "-"}</td>
-                      <td className="px-4 py-3">{safePhone(caseItem.beneficiaryPhone) || "-"}</td>
-                      <td className="px-4 py-3">{caseItem.gender || "-"}</td>
+            <Select value={disabilityFilter} onValueChange={setDisabilityFilter}>
+              <SelectTrigger className="rounded-2xl bg-slate-50">
+                <SelectValue placeholder="المرض / الإعاقة" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الأمراض</SelectItem>
+                {availableDiseases.map((disease) => (
+                  <SelectItem key={disease} value={disease}>{disease}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={specialistFilter} onValueChange={setSpecialistFilter}>
+              <SelectTrigger className="rounded-2xl bg-slate-50">
+                <SelectValue placeholder="المختص" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل المختصين</SelectItem>
+                <SelectItem value="__none">بدون مختص</SelectItem>
+                {availableSpecialists.map((specialist) => (
+                  <SelectItem key={specialist} value={specialist}>{specialist}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={smartLevelFilter} onValueChange={setSmartLevelFilter}>
+              <SelectTrigger className="rounded-2xl bg-slate-50">
+                <SelectValue placeholder="التصنيف" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل التصنيفات</SelectItem>
+                <SelectItem value="غير محدد">غير محدد</SelectItem>
+                <SelectItem value="متابعة">متابعة</SelectItem>
+                <SelectItem value="خطر">خطر</SelectItem>
+                <SelectItem value="ممتاز">ممتاز</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border bg-white shadow-sm">
+          <div className="flex flex-col gap-2 border-b p-5 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-black text-slate-900">قائمة الحالات</h2>
+              <p className="mt-1 text-xs text-slate-500">عدد الحالات: {filteredCases.length}</p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto p-5">
+            <table className="w-full min-w-[1180px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-xs text-slate-500">
+                  <th className="px-4 py-3 text-right">الحالة</th>
+                  <th className="px-4 py-3 text-right">الجمعية</th>
+                  <th className="px-4 py-3 text-right">المختص</th>
+                  <th className="px-4 py-3 text-right">التقارير</th>
+                  <th className="px-4 py-3 text-right">الجلسات</th>
+                  <th className="px-4 py-3 text-right">التقدم</th>
+                  <th className="px-4 py-3 text-right">التمويل</th>
+                  <th className="px-4 py-3 text-right">التصنيف</th>
+                  <th className="px-4 py-3 text-right">الملف</th>
+                  <th className="px-4 py-3 text-right">الإجراءات</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {filteredCases.map((caseItem) => {
+                  const smart = getSmartCaseAssessment(caseItem);
+                  const operationalStatus = getOperationalStatus(caseItem);
+                  const sessionsCount = getCaseSessionsCount(caseItem);
+                  const disability = caseItem.disabilityType || caseItem.disorderType || "-";
+                  const specialist = caseItem.specialistName || caseItem.specialist || "";
+                  const initials =
+                    caseItem.childName
+                      ?.split(" ")
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .map((part) => part[0])
+                      .join("") || "ح";
+
+                  return (
+                    <tr key={caseItem.id} className="border-b last:border-b-0 hover:bg-orange-50/40">
                       <td className="px-4 py-3">
-                        {caseItem.birthDate
-                          ? new Date(caseItem.birthDate).toLocaleDateString("ar-SA")
-                          : "-"}
-                      </td>
-                      <td className="px-4 py-3">{caseItem.age}</td>
-                      <td className="px-4 py-3">
-                        {caseItem.disabilityType || caseItem.disorderType || "-"}
-                      </td>
-                      <td className="px-4 py-3">{caseItem.financialStatus || "-"}</td>
-                      <td className="px-4 py-3">{caseItem.organization}</td>
-                      <td className="px-4 py-3">
-                        <div className="space-y-1">
-                          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getSmartLevelBadgeClass(smart.level)}`}>
-                            {smart.level}
-                          </span>
-                          <div className="max-w-[260px] text-xs leading-5 text-muted-foreground">
-                            {smart.reason}
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-orange-100 text-sm font-black text-orange-700">
+                            {initials}
                           </div>
-                          <div className="text-xs text-orange-700">
-                            التوصية: {smart.suggestedSpecialist}
+
+                          <div className="min-w-0">
+                            <div className="font-black text-slate-900">{caseItem.childName}</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {caseItem.caseNumber} · {disability} · {caseItem.age || "-"} سنوات
+                            </div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              {safePhone(caseItem.familyPhone || caseItem.phone || caseItem.beneficiaryPhone) || "لا يوجد جوال"}
+                            </div>
                           </div>
                         </div>
                       </td>
+
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-slate-700">{caseItem.organization}</div>
+                        <span className={`mt-1 inline-flex rounded-full px-3 py-1 text-xs font-bold ${getStatusBadgeClass(operationalStatus)}`}>
+                          {operationalStatus}
+                        </span>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {specialist && specialist !== "غير محدد" ? (
+                          <div>
+                            <div className="font-bold text-slate-800">{specialist}</div>
+                            {(caseItem.specialistSpecialty || caseItem.specialty) && (
+                              <div className="text-xs text-slate-400">
+                                {caseItem.specialistSpecialty || caseItem.specialty}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
+                            بدون مختص
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-3 py-1 text-xs font-bold ${caseItem.reportsCount ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+                          {caseItem.reportsCount ? `${caseItem.reportsCount} تقرير` : "لا يوجد"}
+                        </span>
+                        {caseItem.lastReportDate && (
+                          <div className="mt-1 text-[11px] text-slate-400">
+                            {new Date(caseItem.lastReportDate).toLocaleDateString("ar-SA")}
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">
+                          {sessionsCount > 0 ? `${sessionsCount} جلسة` : "لا توجد"}
+                        </span>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div className="flex min-w-[110px] items-center gap-2">
+                          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                            <div
+                              className="h-full rounded-full bg-emerald-500"
+                              style={{ width: `${Math.min(Number(caseItem.progressScore || 0), 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-bold">{caseItem.progressScore ? `${caseItem.progressScore}%` : "-"}</span>
+                        </div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {caseItem.financingStatus || caseItem.totalFinancing ? (
+                          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
+                            {caseItem.financingStatus || `${caseItem.totalFinancing} ريال`}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">غير محدد</span>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div className="space-y-1">
+                          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-bold ${getSmartLevelBadgeClass(smart.level)}`}>
+                            {smart.level}
+                          </span>
+                          <div className="line-clamp-2 max-w-[220px] text-xs leading-5 text-slate-500">
+                            {caseItem.smartRecommendation || smart.recommendation}
+                          </div>
+                        </div>
+                      </td>
+
                       <td className="px-4 py-3">
                         <div className="flex min-w-[120px] items-center gap-2">
                           <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
@@ -1243,35 +1905,26 @@ export default function CasesManagement() {
                               style={{ width: `${smart.completeness}%` }}
                             />
                           </div>
-                          <span className="text-xs font-semibold">{smart.completeness}%</span>
+                          <span className="text-xs font-bold">{smart.completeness}%</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`rounded-full px-3 py-1 text-xs font-medium ${getStatusBadgeClass(operationalStatus)}`}>
-                          {operationalStatus}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                          {sessionsCount > 0 ? `${sessionsCount} جلسة` : "لا توجد"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 max-w-[220px] truncate">{caseItem.notes || "-"}</td>
+
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
                           <Button
-                            variant="ghost"
+                            variant="outline"
                             size="sm"
-                            className="text-blue-600 hover:text-blue-700"
+                            className="rounded-xl text-blue-600"
                             onClick={() => navigate(`/cases/${caseItem.id}`)}
                           >
-                            <Eye className="h-4 w-4" />
+                            <Eye className="ml-1 h-4 w-4" />
+                            عرض
                           </Button>
 
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="text-orange-600 hover:text-orange-700"
+                            className="rounded-xl text-orange-600 hover:text-orange-700"
                             onClick={() => openEditDialog(caseItem)}
                           >
                             <Edit className="h-4 w-4" />
@@ -1280,7 +1933,7 @@ export default function CasesManagement() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="text-red-600 hover:text-red-700"
+                            className="rounded-xl text-red-600 hover:text-red-700"
                             onClick={() => handleDelete(caseItem.id)}
                             disabled={deleteCaseMutation.isPending}
                           >
@@ -1289,19 +1942,18 @@ export default function CasesManagement() {
                         </div>
                       </td>
                     </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                  );
+                })}
+              </tbody>
+            </table>
 
-              {filteredCases.length === 0 && (
-                <div className="py-8 text-center text-muted-foreground">
-                  لا توجد حالات تطابق معايير البحث
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+            {filteredCases.length === 0 && (
+              <div className="py-10 text-center text-sm text-slate-500">
+                لا توجد حالات تطابق معايير البحث.
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

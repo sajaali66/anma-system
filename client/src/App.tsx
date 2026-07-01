@@ -15,6 +15,8 @@ import Alerts from "./pages/Alerts";
 import AIMonitoring from "./pages/AIMonitoring";
 import OrganizationsManagement from "./pages/OrganizationsManagement";
 import OrganizationDetails from "./pages/OrganizationDetails";
+import DoctorsManagement from "./pages/DoctorsManagement";
+import UsersManagement from "./pages/UsersManagement";
 import DashboardLayout from "./components/DashboardLayout";
 
 function Router() {
@@ -38,6 +40,18 @@ function Router() {
       <Route path="/sessions">
         <DashboardLayout>
           <SessionsManagement />
+        </DashboardLayout>
+      </Route>
+
+      <Route path="/doctors">
+        <DashboardLayout>
+          <DoctorsManagement />
+        </DashboardLayout>
+      </Route>
+
+      <Route path="/users">
+        <DashboardLayout>
+          <UsersManagement />
         </DashboardLayout>
       </Route>
 

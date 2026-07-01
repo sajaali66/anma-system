@@ -30,6 +30,7 @@ const lightInputClass = "placeholder:text-muted-foreground/40";
 
 
 const CASE_SMART_SYNC_STORAGE_KEY = "anma-case-smart-sync";
+const CLINICAL_REPORTS_STORAGE_KEY = "anma-clinical-reports";
 
 type SmartLevel = "غير محدد" | "ممتاز" | "متابعة" | "خطر";
 
@@ -47,9 +48,33 @@ type StoredCaseSmartSync = {
   suggestedSpecialist?: string;
   attendanceRate?: number;
   improvement?: number;
+  reportsCount?: number;
+  lastReportDate?: string;
+  financingStatus?: string;
+  totalFinancing?: number;
+  approvedSessionCount?: number;
+  usedSessionCount?: number;
+  remainingSessions?: number;
+  fundingSource?: string;
   needsFollowUp?: boolean;
   isHighRisk?: boolean;
   administrativeAlerts?: string[];
+  latestReportTitle?: string;
+  latestReportText?: string;
+  latestReportDoctor?: string;
+  latestReportType?: string;
+  clinicalSummary?: string;
+  suggestedDiagnosis?: string;
+  smartNeed?: string;
+  carePriority?: string;
+  recommendedSessions?: number;
+  expectedSessionCost?: number;
+  expectedEvaluationCost?: number;
+  expectedCareCost?: number;
+  requiredSpecialistLevel?: string;
+  requiredServiceType?: string;
+  fundingDecision?: string;
+  smartDecisionRationale?: string;
   updatedAt?: string;
 };
 
@@ -77,15 +102,22 @@ function writeCaseSmartSync(caseId: number, data: StoredCaseSmartSync) {
 
   localStorage.setItem(CASE_SMART_SYNC_STORAGE_KEY, JSON.stringify(nextMap));
   window.dispatchEvent(new CustomEvent("anma-case-smart-sync-updated", { detail: nextMap[String(caseId)] }));
+  window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
+  window.dispatchEvent(new CustomEvent("anma-ai-monitoring-updated"));
 }
 
-const specialistOptions = [
-  { name: "د. أحمد العتيبي", specialty: "طبيب نمو وسلوك" },
-  { name: "أ. سارة القحطاني", specialty: "أخصائي نطق وتخاطب" },
-  { name: "أ. نورة الحربي", specialty: "أخصائي علاج وظيفي" },
-  { name: "أ. محمد السبيعي", specialty: "أخصائي تعديل سلوك" },
-  { name: "أ. ريم المطيري", specialty: "أخصائي صعوبات تعلم" },
-];
+type DoctorOption = {
+  id: number;
+  name: string;
+  specialty: string;
+  status?: string;
+  professionalRank?: string;
+  classification?: string;
+  serviceType?: string;
+  sessionCost?: number;
+  evaluationCost?: number;
+  sessionDuration?: number;
+};
 
 const sessionFormSchema = z.object({
   sessionDate: z.date(),
@@ -125,10 +157,56 @@ const financingFormSchema = z.object({
   financeNotes: z.string().optional(),
 });
 
+const clinicalReportFormSchema = z.object({
+  title: z.string().min(1, "عنوان التقرير مطلوب"),
+  reportType: z.enum([
+    "تقرير تقييم أولي",
+    "تقرير جلسة",
+    "تقرير نطق وتخاطب",
+    "تقرير علاج وظيفي",
+    "تقرير علاج طبيعي",
+    "تقرير نفسي",
+    "تقرير نمو وسلوك",
+    "تقرير تعديل سلوك",
+    "تقرير متابعة",
+    "تقرير ختامي",
+  ]),
+  doctorName: z.string().min(1, "اسم المختص مطلوب"),
+  specialty: z.string().optional(),
+  reportDate: z.date(),
+  reportText: z.string().min(1, "نص التقرير مطلوب"),
+  reportFileName: z.string().optional(),
+  reportFileDataUrl: z.string().optional(),
+  recommendations: z.string().optional(),
+  administrativeNotes: z.string().optional(),
+});
+
 type SessionFormValues = z.infer<typeof sessionFormSchema>;
 type ImpactFormValues = z.infer<typeof impactFormSchema>;
 type ComplianceFormValues = z.infer<typeof complianceFormSchema>;
 type FinancingFormValues = z.infer<typeof financingFormSchema>;
+type ClinicalReportFormValues = z.infer<typeof clinicalReportFormSchema>;
+
+type ClinicalReport = ClinicalReportFormValues & {
+  id: string;
+  caseId: number;
+  createdAt: string;
+};
+
+type ClinicalReportAnalysis = {
+  aiSummary: string;
+  strengths: string[];
+  weaknesses: string[];
+  riskLevel: SmartLevel;
+  predictedOutcome: string;
+  recommendedCarePlan: string;
+  homePlanRecommendations: string[];
+  administrativeRecommendations: string[];
+  nextAction: string;
+  suggestedSpecialist: string;
+  suggestedDiagnosis: string;
+  progressScore: number;
+};
 
 function getNumber(value: any) {
   const n = Number(value);
@@ -158,6 +236,220 @@ function extractSpecialistFromNotes(notes?: string) {
   return { name, specialty };
 }
 
+function readClinicalReportsMap(): Record<string, ClinicalReport[]> {
+  try {
+    const raw = localStorage.getItem(CLINICAL_REPORTS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getClinicalReportsByCase(caseId: number): ClinicalReport[] {
+  if (!caseId) return [];
+  const map = readClinicalReportsMap();
+  return Array.isArray(map[String(caseId)]) ? map[String(caseId)] : [];
+}
+
+function saveClinicalReportsByCase(caseId: number, reports: ClinicalReport[]) {
+  const map = readClinicalReportsMap();
+  const nextMap = {
+    ...map,
+    [String(caseId)]: reports,
+  };
+
+  localStorage.setItem(CLINICAL_REPORTS_STORAGE_KEY, JSON.stringify(nextMap));
+  writeCaseSmartSync(caseId, {
+    reportsCount: reports.length,
+    lastReportDate: reports[0]?.reportDate ? new Date(reports[0].reportDate).toISOString() : undefined,
+    latestReportTitle: reports[0]?.title,
+    latestReportText: reports[0]?.reportText,
+    latestReportDoctor: reports[0]?.doctorName,
+    latestReportType: reports[0]?.reportType,
+  });
+  window.dispatchEvent(
+    new CustomEvent("anma-clinical-reports-updated", {
+      detail: {
+        caseId,
+        reports,
+      },
+    })
+  );
+  window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
+}
+
+function includesAny(text: string, keywords: string[]) {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function analyzeClinicalReports(reports: ClinicalReport[], caseData: any): ClinicalReportAnalysis {
+  if (!reports.length) {
+    return {
+      aiSummary:
+        "لا توجد تقارير مختصين مسجلة بعد. أضيفي تقرير مختص حتى يتم بناء خطة أدق للحالة.",
+      strengths: [],
+      weaknesses: [],
+      riskLevel: "غير محدد",
+      predictedOutcome: "سيتم توقع المسار بعد توفر تقارير المختصين.",
+      recommendedCarePlan: "إضافة تقرير تقييم أولي أو تقرير متابعة من المختص.",
+      homePlanRecommendations: ["تسجيل تقرير مختص أولي لتفعيل الخطة المنزلية."],
+      administrativeRecommendations: ["استكمال ملف تقارير المختصين داخل الحالة."],
+      nextAction: "إضافة أول تقرير مختص.",
+      suggestedSpecialist: caseData?.specialist || "يحدد بعد التقرير",
+      suggestedDiagnosis: caseData?.disorderType || caseData?.disabilityType || "غير محدد",
+      progressScore: 0,
+    };
+  }
+
+  const combinedText = reports
+    .map((report) =>
+      [
+        report.title,
+        report.reportType,
+        report.doctorName,
+        report.specialty,
+        report.reportText,
+        report.recommendations,
+        report.administrativeNotes,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    )
+    .join(" ")
+    .toLowerCase();
+
+  const strengths: string[] = [];
+  const weaknesses: string[] = [];
+  const homePlanRecommendations: string[] = [];
+  const administrativeRecommendations: string[] = [];
+
+  if (includesAny(combinedText, ["تحسن", "أفضل", "استجابة", "تطور", "تقدم"])) {
+    strengths.push("وجود مؤشرات تحسن أو استجابة أفضل حسب تقارير المختصين.");
+  }
+
+  if (includesAny(combinedText, ["تواصل بصري", "النظر", "عين"])) {
+    strengths.push("تحسن أو ملاحظة مهمة في التواصل البصري.");
+    homePlanRecommendations.push("تدريب يومي قصير على التواصل البصري من خلال اللعب.");
+  }
+
+  if (includesAny(combinedText, ["انتباه", "تركيز"])) {
+    strengths.push("وجود مؤشرات مرتبطة بالانتباه والتركيز.");
+    homePlanRecommendations.push("تمارين انتباه قصيرة ومتكررة داخل المنزل.");
+  }
+
+  if (includesAny(combinedText, ["ضعف", "تأخر", "صعوبة", "لا يستطيع", "لم يتحسن"])) {
+    weaknesses.push("وجود نقاط ضعف أو صعوبات متكررة مذكورة في التقرير.");
+  }
+
+  if (includesAny(combinedText, ["تفاعل اجتماعي", "اجتماعي", "تفاعل"])) {
+    weaknesses.push("الحالة تحتاج دعم إضافي في مهارات التفاعل الاجتماعي.");
+    homePlanRecommendations.push("أنشطة لعب اجتماعي يومية لمدة 10-15 دقيقة.");
+  }
+
+  if (includesAny(combinedText, ["نطق", "تخاطب", "كلام", "لغة"])) {
+    weaknesses.push("تحتاج الحالة إلى متابعة جانب اللغة والتخاطب.");
+    homePlanRecommendations.push("تمارين تسمية الأشياء وتكرار الكلمات بشكل يومي.");
+  }
+
+  if (includesAny(combinedText, ["سلوك", "نوبات", "غضب", "عدوان", "عناد"])) {
+    weaknesses.push("توجد مؤشرات سلوكية تحتاج خطة تعديل سلوك.");
+    administrativeRecommendations.push("توجيه الأسرة لتوثيق السلوكيات المتكررة ومثيراتها.");
+  }
+
+  if (includesAny(combinedText, ["غياب", "عدم حضور", "انقطاع"])) {
+    weaknesses.push("يوجد مؤشر التزام يحتاج متابعة.");
+    administrativeRecommendations.push("التواصل مع الأسرة لتحسين الالتزام بالحضور.");
+  }
+
+  let suggestedDiagnosis =
+    caseData?.disabilityType || caseData?.disorderType || caseData?.diagnosis || "غير محدد";
+  let suggestedSpecialist = caseData?.specialist || "أخصائي نمو وسلوك";
+
+  if (includesAny(combinedText, ["توحد", "تواصل", "تفاعل"])) {
+    suggestedDiagnosis = "اشتباه اضطراب طيف التوحد / اضطراب تواصل";
+    suggestedSpecialist = "طبيب نمو وسلوك + أخصائي تعديل سلوك";
+  } else if (includesAny(combinedText, ["نطق", "تخاطب", "لغة", "كلام"])) {
+    suggestedDiagnosis = "تأخر نطق / اضطراب لغة وتواصل";
+    suggestedSpecialist = "أخصائي نطق وتخاطب";
+  } else if (includesAny(combinedText, ["فرط", "انتباه", "تركيز", "adhd"])) {
+    suggestedDiagnosis = "اشتباه فرط حركة وتشتت انتباه";
+    suggestedSpecialist = "طبيب نمو وسلوك / أخصائي نفسي";
+  } else if (includesAny(combinedText, ["حركي", "توازن", "مشي", "عضلات"])) {
+    suggestedDiagnosis = "تأخر أو صعوبة حركية";
+    suggestedSpecialist = "أخصائي علاج طبيعي / علاج وظيفي";
+  }
+
+  const negativeSignals = weaknesses.length;
+  const positiveSignals = strengths.length;
+  const hasRiskWords = includesAny(combinedText, [
+    "تدهور",
+    "خطر",
+    "إحالة عاجلة",
+    "حرج",
+    "إيذاء",
+    "عدوان شديد",
+    "انقطاع",
+  ]);
+
+  let riskLevel: SmartLevel = "متابعة";
+  if (hasRiskWords || negativeSignals >= 4) riskLevel = "خطر";
+  else if (positiveSignals >= 2 && negativeSignals === 0) riskLevel = "ممتاز";
+  else riskLevel = "متابعة";
+
+  const progressScore =
+    riskLevel === "ممتاز"
+      ? 80
+      : riskLevel === "متابعة"
+      ? Math.max(45, 65 - negativeSignals * 5 + positiveSignals * 5)
+      : 30;
+
+  const aiSummary =
+    riskLevel === "خطر"
+      ? "تقارير المختصين تشير إلى وجود مؤشرات تحتاج تدخل عاجل أو مراجعة الخطة العلاجية."
+      : riskLevel === "ممتاز"
+      ? "تقارير المختصين تشير إلى تقدم جيد واستجابة إيجابية للخطة الحالية."
+      : "تقارير المختصين تشير إلى احتياج الحالة لمتابعة منتظمة وخطة علاجية مبنية على نقاط القوة والضعف.";
+
+  const predictedOutcome =
+    riskLevel === "خطر"
+      ? "قد يتأخر تحقيق أهداف الخطة إذا لم يتم التدخل ومراجعة الالتزام والخطة."
+      : riskLevel === "ممتاز"
+      ? "من المتوقع استمرار التحسن مع الالتزام بالخطة الحالية."
+      : "من المتوقع تحسن تدريجي خلال 6 إلى 8 أسابيع إذا تم الالتزام بالخطة والتوصيات المنزلية.";
+
+  const recommendedCarePlan =
+    reports[0]?.recommendations ||
+    (riskLevel === "خطر"
+      ? "مراجعة الخطة العلاجية بشكل عاجل، تحديد جلسة تقييم، وتكثيف المتابعة مع الأسرة."
+      : "الاستمرار بخطة جلسات منتظمة، متابعة القياس، وتفعيل الخطة المنزلية اليومية.");
+
+  if (!homePlanRecommendations.length) {
+    homePlanRecommendations.push("تطبيق نشاط منزلي يومي لمدة 15 دقيقة مرتبط بهدف الجلسة.");
+  }
+
+  if (!administrativeRecommendations.length) {
+    administrativeRecommendations.push("متابعة تحديث تقارير المختصين بشكل دوري كل 4 أسابيع.");
+  }
+
+  return {
+    aiSummary,
+    strengths: strengths.length ? Array.from(new Set(strengths)) : ["لا توجد نقاط قوة واضحة مكتوبة بعد."],
+    weaknesses: weaknesses.length ? Array.from(new Set(weaknesses)) : ["لا توجد نقاط ضعف واضحة مكتوبة بعد."],
+    riskLevel,
+    predictedOutcome,
+    recommendedCarePlan,
+    homePlanRecommendations: Array.from(new Set(homePlanRecommendations)),
+    administrativeRecommendations: Array.from(new Set(administrativeRecommendations)),
+    nextAction:
+      riskLevel === "خطر"
+        ? "جدولة مراجعة عاجلة للخطة العلاجية."
+        : "متابعة تنفيذ الخطة وتحديث التقرير بعد الجلسات القادمة.",
+    suggestedSpecialist,
+    suggestedDiagnosis,
+    progressScore,
+  };
+}
+
 export default function CaseDetails() {
   const { id } = useParams();
   const caseId = parseInt(id || "0");
@@ -166,12 +458,36 @@ export default function CaseDetails() {
   const [isImpactDialogOpen, setIsImpactDialogOpen] = useState(false);
   const [isComplianceDialogOpen, setIsComplianceDialogOpen] = useState(false);
   const [isFinancingDialogOpen, setIsFinancingDialogOpen] = useState(false);
+  const [isClinicalReportDialogOpen, setIsClinicalReportDialogOpen] = useState(false);
+  const [clinicalReports, setClinicalReports] = useState<ClinicalReport[]>([]);
 
   const caseQuery = trpc.cases.getById.useQuery({ id: caseId });
   const sessionsQuery = trpc.sessions.getByCase.useQuery({ caseId });
   const impactQuery = trpc.impact.getByCase.useQuery({ caseId });
   const complianceQuery = trpc.compliance.getByCase.useQuery({ caseId });
   const financingQuery = trpc.financing.getByCase.useQuery({ caseId });
+  const doctorsQuery = trpc.doctors.list.useQuery();
+
+  useEffect(() => {
+    setClinicalReports(getClinicalReportsByCase(caseId));
+  }, [caseId]);
+
+  const specialistOptions = useMemo<DoctorOption[]>(() => {
+    return ((doctorsQuery.data || []) as any[])
+      .filter((doctor) => doctor.status !== "موقوف")
+      .map((doctor) => ({
+        id: Number(doctor.id),
+        name: String(doctor.name || ""),
+        specialty: String(doctor.specialty || ""),
+        status: doctor.status,
+        professionalRank: String(doctor.professionalRank || doctor.rank || doctor.classification || ""),
+        classification: String(doctor.classification || doctor.professionalRank || doctor.rank || ""),
+        serviceType: String(doctor.serviceType || doctor.specialty || ""),
+        sessionCost: getNumber(doctor.sessionCost || doctor.followUpSessionCost || doctor.pricePerSession),
+        evaluationCost: getNumber(doctor.evaluationCost || doctor.assessmentCost || doctor.initialEvaluationCost),
+        sessionDuration: getNumber(doctor.sessionDuration || doctor.durationMinutes || 45),
+      }));
+  }, [doctorsQuery.data]);
 
   const sessionForm = useForm<SessionFormValues>({
     resolver: zodResolver(sessionFormSchema),
@@ -223,13 +539,32 @@ export default function CaseDetails() {
     },
   });
 
+  const clinicalReportForm = useForm<ClinicalReportFormValues>({
+    resolver: zodResolver(clinicalReportFormSchema),
+    defaultValues: {
+      title: "",
+      reportType: "تقرير متابعة",
+      doctorName: "",
+      specialty: "",
+      reportDate: new Date(),
+      reportText: "",
+      reportFileName: "",
+      reportFileDataUrl: "",
+      recommendations: "",
+      administrativeNotes: "",
+    },
+  });
+
   const attendanceValue = sessionForm.watch("attendance");
+
+
 
   const createSessionMutation = trpc.sessions.create.useMutation({
     onSuccess: () => {
       toast.success("تم إضافة الجلسة بنجاح");
       void sessionsQuery.refetch();
       void caseQuery.refetch();
+      window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
       setIsSessionDialogOpen(false);
       sessionForm.reset({
         sessionDate: new Date(),
@@ -241,13 +576,14 @@ export default function CaseDetails() {
         notes: "",
       });
     },
-    onError: (error) => toast.error(error.message || "حدث خطأ في إضافة الجلسة"),
+    onError: (error: any) => toast.error(error.message || "حدث خطأ في إضافة الجلسة"),
   });
 
   const createImpactMutation = trpc.impact.create.useMutation({
     onSuccess: () => {
       toast.success("تم تسجيل قياس الأثر بنجاح");
       void impactQuery.refetch();
+      window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
       setIsImpactDialogOpen(false);
       impactForm.reset({
         testName: "قياس عام",
@@ -258,13 +594,14 @@ export default function CaseDetails() {
         measurementDate: new Date(),
       });
     },
-    onError: (error) => toast.error(error.message || "حدث خطأ في تسجيل قياس الأثر"),
+    onError: (error: any) => toast.error(error.message || "حدث خطأ في تسجيل قياس الأثر"),
   });
 
   const createComplianceMutation = trpc.compliance.create.useMutation({
     onSuccess: () => {
       toast.success("تم تسجيل الالتزام بنجاح");
       void complianceQuery.refetch();
+      window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
       setIsComplianceDialogOpen(false);
       complianceForm.reset({
         attendancePercentage: "",
@@ -275,13 +612,14 @@ export default function CaseDetails() {
         complianceDate: new Date(),
       });
     },
-    onError: (error) => toast.error(error.message || "حدث خطأ في تسجيل الالتزام"),
+    onError: (error: any) => toast.error(error.message || "حدث خطأ في تسجيل الالتزام"),
   });
 
   const createFinancingMutation = trpc.financing.create.useMutation({
     onSuccess: () => {
       toast.success("تم تسجيل التمويل بنجاح");
       void financingQuery.refetch();
+      window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
       setIsFinancingDialogOpen(false);
       financingForm.reset({
         fundingSource: "",
@@ -293,18 +631,77 @@ export default function CaseDetails() {
         financeNotes: "",
       });
     },
-    onError: (error) => toast.error(error.message || "حدث خطأ في تسجيل التمويل"),
+    onError: (error: any) => toast.error(error.message || "حدث خطأ في تسجيل التمويل"),
   });
 
   const analysisMutation = trpc.analysis.analyzeCaseProgress.useMutation({
-    onError: (error) => toast.error(error.message || "حدث خطأ أثناء تحليل الحالة"),
+    onError: (error: any) => toast.error(error.message || "حدث خطأ أثناء تحليل الحالة"),
   });
 
   const caseData: any = caseQuery.data;
 
   const totalFinancing = useMemo(() => {
-    return financingQuery.data?.reduce((sum: number, item: any) => sum + Number(item.totalCost || 0), 0) || 0;
+    return financingQuery.data?.reduce(
+      (sum: number, item: any) =>
+        sum + Number(item.totalCost || item.totalFinancing || 0),
+      0
+    ) || 0;
   }, [financingQuery.data]);
+
+  const latestFinancing = useMemo(() => {
+    const financing = financingQuery.data || [];
+    return financing[0] || null;
+  }, [financingQuery.data]);
+
+  const financingSummary = useMemo(() => {
+    const approved = getNumber(latestFinancing?.approvedSessionCount || 0);
+    const used = getNumber(latestFinancing?.usedSessionCount || sessionsQuery.data?.length || 0);
+    const remaining = Math.max(approved - used, 0);
+
+    return {
+      fundingSource: latestFinancing?.fundingSource || "",
+      financingStatus: latestFinancing?.financingStatus || "",
+      totalFinancing,
+      approvedSessionCount: approved,
+      usedSessionCount: used,
+      remainingSessions: remaining,
+    };
+  }, [latestFinancing, sessionsQuery.data?.length, totalFinancing]);
+
+  const linkedDoctor = useMemo(() => {
+    const doctors = (doctorsQuery.data || []) as any[];
+    return (
+      doctors.find((doctor) => Number(doctor.id) === Number(caseData?.doctorId)) ||
+      doctors.find((doctor) => doctor.name === caseData?.specialist) ||
+      null
+    );
+  }, [doctorsQuery.data, caseData?.doctorId, caseData?.specialist]);
+
+  useEffect(() => {
+    if (!caseData) return;
+
+    const currentDoctor = clinicalReportForm.getValues("doctorName");
+    const currentSpecialty = clinicalReportForm.getValues("specialty");
+
+    if (!currentDoctor && (linkedDoctor?.name || caseData.specialistName || caseData.specialist)) {
+      clinicalReportForm.setValue(
+        "doctorName",
+        linkedDoctor?.name || caseData.specialistName || caseData.specialist || ""
+      );
+    }
+
+    if (!currentSpecialty && (linkedDoctor?.specialty || caseData.specialistSpecialty)) {
+      clinicalReportForm.setValue(
+        "specialty",
+        linkedDoctor?.specialty || caseData.specialistSpecialty || ""
+      );
+    }
+  }, [caseData, linkedDoctor, clinicalReportForm]);
+
+
+  const clinicalReportAnalysis = useMemo(() => {
+    return analyzeClinicalReports(clinicalReports, caseData);
+  }, [clinicalReports, caseData]);
 
   const smartStats = useMemo(() => {
     const sessions = sessionsQuery.data || [];
@@ -418,7 +815,41 @@ export default function CaseDetails() {
       interventionPlan = "خطة تعليمية فردية، قياس قبلي وبعدي، وتمارين قراءة/كتابة تدريجية.";
     }
 
+    const riskLevel =
+      level === "خطر" ? "مرتفع" : level === "متابعة" ? "متوسط" : level === "ممتاز" ? "منخفض" : "غير محدد";
+
+    const aiSummary =
+      !hasAnyAnalysisData
+        ? "لا توجد بيانات كافية بعد لإصدار ملخص سريري ذكي. أضيفي جلسة أو قياس أثر أو التزام الأسرة لرفع دقة التحليل."
+        : level === "خطر"
+        ? `تشير البيانات إلى وجود مؤشرات تعثر واضحة. ${reason} تحتاج الحالة إلى تدخل سريع ومراجعة الخطة العلاجية.`
+        : level === "متابعة"
+        ? `تشير البيانات إلى أن الحالة تحتاج متابعة منظمة. ${reason} يوصى بتقوية الالتزام وتحديث الخطة حسب ملاحظات المختص.`
+        : "تشير البيانات إلى أن الحالة مستقرة وتسير بشكل جيد، مع عدم وجود مؤشرات خطر حالية.";
+
+    const predictedOutcome =
+      !hasAnyAnalysisData
+        ? "سيتم توقع المسار العلاجي بعد تسجيل أول بيانات متابعة."
+        : level === "خطر"
+        ? "في حال استمرار نفس المؤشرات، قد تتأخر الحالة في تحقيق أهداف الخطة العلاجية."
+        : level === "متابعة"
+        ? "من المتوقع حدوث تحسن تدريجي إذا تم تحسين الالتزام بالحضور ومتابعة التوصيات."
+        : "من المتوقع استمرار التحسن إذا استمر الالتزام الحالي بالخطة والجلسات.";
+
+    const clinicalRecommendation =
+      level === "خطر"
+        ? "التواصل مع الأسرة، مراجعة الخطة العلاجية، وتحديد جلسة تقييم قريبة مع المختص المسؤول."
+        : level === "متابعة"
+        ? "زيادة المتابعة الأسبوعية، توثيق ملاحظات المختص، وتفعيل الخطة المنزلية."
+        : level === "ممتاز"
+        ? "الاستمرار على الخطة الحالية مع قياس أثر دوري."
+        : "بدء الجلسات وتسجيل ملاحظات المختص لتفعيل التحليل الذكي.";
+
     return {
+      riskLevel,
+      aiSummary,
+      predictedOutcome,
+      clinicalRecommendation,
       totalSessions,
       attendedSessions,
       absentSessions,
@@ -444,6 +875,196 @@ export default function CaseDetails() {
     };
   }, [sessionsQuery.data, impactQuery.data, complianceQuery.data, financingQuery.data, caseData]);
 
+  const finalProgressScore = useMemo(() => {
+    const impactScore = clampPercentage(smartStats.improvement);
+    const attendanceScore = clampPercentage(smartStats.attendanceRate);
+    const complianceScore = clampPercentage(smartStats.complianceRate);
+    const reportsScore = clinicalReports.length > 0 ? clinicalReportAnalysis.progressScore || 70 : 0;
+
+    return Math.round(
+      impactScore * 0.4 +
+        attendanceScore * 0.3 +
+        complianceScore * 0.2 +
+        reportsScore * 0.1
+    );
+  }, [
+    smartStats.improvement,
+    smartStats.attendanceRate,
+    smartStats.complianceRate,
+    clinicalReports.length,
+    clinicalReportAnalysis.progressScore,
+  ]);
+
+  const smartCareFundingPlan = useMemo(() => {
+    const latestReportText = [
+      clinicalReports[0]?.reportText,
+      clinicalReports[0]?.recommendations,
+      caseData?.notes,
+      caseData?.disabilityType,
+      caseData?.disorderType,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    const currentLevel =
+      clinicalReportAnalysis.riskLevel === "خطر" || smartStats.level === "خطر"
+        ? "أولوية عالية"
+        : clinicalReportAnalysis.riskLevel === "متابعة" || smartStats.level === "متابعة"
+        ? "أولوية متابعة"
+        : clinicalReportAnalysis.riskLevel === "ممتاز" || smartStats.level === "ممتاز"
+        ? "مستقر"
+        : "يحتاج تقييم أولي";
+
+    const needsEvaluation = clinicalReports.length === 0 || !smartStats.hasSessions;
+    const hasHighPriority = currentLevel === "أولوية عالية";
+    const hasFollowUpPriority = currentLevel === "أولوية متابعة";
+
+    let recommendedSessions = 4;
+
+    if (hasHighPriority) recommendedSessions = 12;
+    else if (hasFollowUpPriority) recommendedSessions = 8;
+    else if (currentLevel === "مستقر") recommendedSessions = 4;
+    else recommendedSessions = 1;
+
+    let requiredServiceType =
+      clinicalReportAnalysis.suggestedSpecialist ||
+      smartStats.recommendedSpecialist ||
+      linkedDoctor?.specialty ||
+      "تقييم شامل";
+
+    if (latestReportText.includes("نطق") || latestReportText.includes("تخاطب") || latestReportText.includes("لغة")) {
+      requiredServiceType = "علاج نطق وتخاطب";
+    } else if (latestReportText.includes("سلوك") || latestReportText.includes("توحد") || latestReportText.includes("تفاعل")) {
+      requiredServiceType = "نمو وسلوك / تعديل سلوك";
+    } else if (latestReportText.includes("حرك") || latestReportText.includes("عضلات") || latestReportText.includes("توازن")) {
+      requiredServiceType = "علاج طبيعي / علاج وظيفي";
+    } else if (latestReportText.includes("نفسي") || latestReportText.includes("قلق") || latestReportText.includes("انتباه")) {
+      requiredServiceType = "نفسي / نمو وسلوك";
+    }
+
+    const requiredSpecialistLevel =
+      hasHighPriority || needsEvaluation
+        ? "استشاري أو أخصائي أول"
+        : hasFollowUpPriority
+        ? "أخصائي أول أو أخصائي"
+        : "أخصائي";
+
+    const doctorSessionCost =
+      getNumber(linkedDoctor?.sessionCost || linkedDoctor?.pricePerSession) ||
+      (requiredSpecialistLevel.includes("استشاري") ? 500 : requiredSpecialistLevel.includes("أخصائي أول") ? 350 : 250);
+
+    const doctorEvaluationCost =
+      getNumber(linkedDoctor?.evaluationCost || linkedDoctor?.assessmentCost) ||
+      (requiredSpecialistLevel.includes("استشاري") ? 700 : requiredSpecialistLevel.includes("أخصائي أول") ? 500 : 350);
+
+    const expectedCareCost =
+      (needsEvaluation ? doctorEvaluationCost : 0) + recommendedSessions * doctorSessionCost;
+
+    const fundingDecision =
+      expectedCareCost >= 4000 || hasHighPriority
+        ? "يحتاج اعتماد تمويل مرتفع"
+        : expectedCareCost >= 2000 || hasFollowUpPriority
+        ? "يحتاج اعتماد تمويل متوسط"
+        : "احتياج تمويلي منخفض";
+
+    const smartNeed =
+      needsEvaluation
+        ? "تقييم أولي شامل لتحديد الخطة"
+        : hasHighPriority
+        ? "تدخل عاجل ومراجعة خطة الرعاية"
+        : hasFollowUpPriority
+        ? "متابعة علاجية منتظمة مع قياس أثر"
+        : "استمرار متابعة دورية";
+
+    const smartDecisionRationale =
+      `تم احتساب الاحتياج بناءً على مستوى الأولوية (${currentLevel})، عدد التقارير (${clinicalReports.length})، نسبة الحضور (${smartStats.attendanceRate}%)، ومؤشر التقدم (${finalProgressScore}%).`;
+
+    return {
+      smartNeed,
+      carePriority: currentLevel,
+      recommendedSessions,
+      expectedSessionCost: doctorSessionCost,
+      expectedEvaluationCost: needsEvaluation ? doctorEvaluationCost : 0,
+      expectedCareCost,
+      requiredSpecialistLevel,
+      requiredServiceType,
+      fundingDecision,
+      smartDecisionRationale,
+      needsEvaluation,
+    };
+  }, [
+    clinicalReports,
+    clinicalReportAnalysis.riskLevel,
+    clinicalReportAnalysis.suggestedSpecialist,
+    caseData,
+    smartStats.level,
+    smartStats.hasSessions,
+    smartStats.recommendedSpecialist,
+    smartStats.attendanceRate,
+    finalProgressScore,
+    linkedDoctor,
+  ]);
+
+
+  const latestSession = sessionsQuery.data?.[0];
+  const latestImpact = impactQuery.data?.[0];
+  const latestCompliance = complianceQuery.data?.[0];
+  const latestReport = clinicalReports[0];
+
+  const safeClinicalReportsForAI = useMemo(() => {
+    return clinicalReports.map((report) => ({
+      id: report.id,
+      caseId: report.caseId,
+      title: report.title,
+      reportType: report.reportType,
+      doctorName: report.doctorName,
+      specialty: report.specialty,
+      reportDate: report.reportDate,
+      reportText: String(report.reportText || "").slice(0, 4000),
+      recommendations: String(report.recommendations || "").slice(0, 2000),
+      administrativeNotes: String(report.administrativeNotes || "").slice(0, 1000),
+      reportFileName: report.reportFileName || "",
+    }));
+  }, [clinicalReports]);
+
+  const safeSessionsForAI = useMemo(() => {
+    return (sessionsQuery.data || []).map((session: any) => ({
+      id: session.id,
+      caseId: session.caseId,
+      sessionDate: session.sessionDate,
+      sessionType: session.sessionType,
+      attendance: session.attendance,
+      progress: session.progress,
+      notes: String(session.notes || "").slice(0, 1500),
+    }));
+  }, [sessionsQuery.data]);
+
+  const safeCaseDataForAI = useMemo(() => {
+    if (!caseData) return {};
+    return {
+      id: caseData.id,
+      caseNumber: caseData.caseNumber,
+      childName: caseData.childName,
+      age: caseData.age,
+      gender: caseData.gender,
+      city: caseData.city,
+      organization: caseData.organization,
+      organizationId: caseData.organizationId,
+      doctorId: caseData.doctorId,
+      specialist: caseData.specialist,
+      specialistName: caseData.specialistName,
+      specialistSpecialty: caseData.specialistSpecialty,
+      disabilityType: caseData.disabilityType,
+      disorderType: caseData.disorderType,
+      diagnosis: caseData.diagnosis,
+      status: caseData.status,
+      operationalStatus: caseData.operationalStatus,
+      notes: String(caseData.notes || "").slice(0, 2000),
+      description: String(caseData.description || "").slice(0, 2000),
+    };
+  }, [caseData]);
+
   useEffect(() => {
     if (!caseId) return;
 
@@ -465,10 +1086,36 @@ export default function CaseDetails() {
       recommendation: smartStats.interventionPlan,
       suggestedSpecialist: smartStats.recommendedSpecialist,
       attendanceRate: smartStats.attendanceRate,
-      improvement: smartStats.improvement,
+      improvement: finalProgressScore,
+      reportsCount: clinicalReports.length,
+      lastReportDate: clinicalReports[0]?.reportDate
+        ? new Date(clinicalReports[0].reportDate).toISOString()
+        : undefined,
+      financingStatus: financingSummary.financingStatus,
+      totalFinancing: financingSummary.totalFinancing,
+      approvedSessionCount: financingSummary.approvedSessionCount,
+      usedSessionCount: financingSummary.usedSessionCount,
+      remainingSessions: financingSummary.remainingSessions,
+      fundingSource: financingSummary.fundingSource,
       needsFollowUp: smartStats.needsFollowUp,
       isHighRisk: smartStats.isHighRisk,
       administrativeAlerts: smartStats.administrativeAlerts,
+      latestReportTitle: clinicalReports[0]?.title,
+      latestReportText: clinicalReports[0]?.reportText,
+      latestReportDoctor: clinicalReports[0]?.doctorName,
+      latestReportType: clinicalReports[0]?.reportType,
+      clinicalSummary: clinicalReportAnalysis.aiSummary,
+      suggestedDiagnosis: clinicalReportAnalysis.suggestedDiagnosis,
+      smartNeed: smartCareFundingPlan.smartNeed,
+      carePriority: smartCareFundingPlan.carePriority,
+      recommendedSessions: smartCareFundingPlan.recommendedSessions,
+      expectedSessionCost: smartCareFundingPlan.expectedSessionCost,
+      expectedEvaluationCost: smartCareFundingPlan.expectedEvaluationCost,
+      expectedCareCost: smartCareFundingPlan.expectedCareCost,
+      requiredSpecialistLevel: smartCareFundingPlan.requiredSpecialistLevel,
+      requiredServiceType: smartCareFundingPlan.requiredServiceType,
+      fundingDecision: smartCareFundingPlan.fundingDecision,
+      smartDecisionRationale: smartCareFundingPlan.smartDecisionRationale,
     });
   }, [
     caseId,
@@ -486,10 +1133,58 @@ export default function CaseDetails() {
     smartStats.recommendedSpecialist,
     smartStats.attendanceRate,
     smartStats.improvement,
+    finalProgressScore,
+    clinicalReportAnalysis.progressScore,
+    clinicalReports.length,
+    clinicalReports,
+    financingSummary,
     smartStats.needsFollowUp,
     smartStats.isHighRisk,
     smartStats.administrativeAlerts,
+    smartCareFundingPlan,
   ]);
+
+  useEffect(() => {
+    if (!caseId || !clinicalReports.length) return;
+
+    writeCaseSmartSync(caseId, {
+      smartLevel: clinicalReportAnalysis.riskLevel,
+      reason: clinicalReportAnalysis.aiSummary,
+      recommendation: clinicalReportAnalysis.recommendedCarePlan,
+      suggestedSpecialist: clinicalReportAnalysis.suggestedSpecialist,
+      improvement: finalProgressScore,
+      reportsCount: clinicalReports.length,
+      lastReportDate: clinicalReports[0]?.reportDate
+        ? new Date(clinicalReports[0].reportDate).toISOString()
+        : undefined,
+      financingStatus: financingSummary.financingStatus,
+      totalFinancing: financingSummary.totalFinancing,
+      approvedSessionCount: financingSummary.approvedSessionCount,
+      usedSessionCount: financingSummary.usedSessionCount,
+      remainingSessions: financingSummary.remainingSessions,
+      fundingSource: financingSummary.fundingSource,
+      needsFollowUp: clinicalReportAnalysis.riskLevel !== "ممتاز",
+      isHighRisk: clinicalReportAnalysis.riskLevel === "خطر",
+      latestReportTitle: clinicalReports[0]?.title,
+      latestReportText: clinicalReports[0]?.reportText,
+      latestReportDoctor: clinicalReports[0]?.doctorName,
+      latestReportType: clinicalReports[0]?.reportType,
+      clinicalSummary: clinicalReportAnalysis.aiSummary,
+      suggestedDiagnosis: clinicalReportAnalysis.suggestedDiagnosis,
+      smartNeed: smartCareFundingPlan.smartNeed,
+      carePriority: smartCareFundingPlan.carePriority,
+      recommendedSessions: smartCareFundingPlan.recommendedSessions,
+      expectedSessionCost: smartCareFundingPlan.expectedSessionCost,
+      expectedEvaluationCost: smartCareFundingPlan.expectedEvaluationCost,
+      expectedCareCost: smartCareFundingPlan.expectedCareCost,
+      requiredSpecialistLevel: smartCareFundingPlan.requiredSpecialistLevel,
+      requiredServiceType: smartCareFundingPlan.requiredServiceType,
+      fundingDecision: smartCareFundingPlan.fundingDecision,
+      smartDecisionRationale: smartCareFundingPlan.smartDecisionRationale,
+    });
+
+    window.dispatchEvent(new CustomEvent("anma-dashboard-data-updated"));
+  }, [caseId, clinicalReports.length, clinicalReports, clinicalReportAnalysis, financingSummary, finalProgressScore, smartCareFundingPlan]);
 
   const handleSessionSubmit = (data: SessionFormValues) => {
     const extraNotes = [
@@ -518,93 +1213,292 @@ export default function CaseDetails() {
       attendancePercentage: String(clampPercentage(data.attendancePercentage)),
     });
   };
-  const handleFinancingSubmit = (data: FinancingFormValues) => createFinancingMutation.mutate({ ...data, caseId });
+  const handleFinancingSubmit = (data: FinancingFormValues) => {
+    const approved = getNumber(data.approvedSessionCount || data.sessionCount || 0);
+    const used = getNumber(data.usedSessionCount || 0);
+    const total = getNumber(data.sessionCount) * getNumber(data.sessionCost);
+
+    writeCaseSmartSync(caseId, {
+      financingStatus: data.financingStatus,
+      totalFinancing: total,
+      approvedSessionCount: approved,
+      usedSessionCount: used,
+      remainingSessions: Math.max(approved - used, 0),
+      fundingSource: data.fundingSource || "",
+    });
+
+    createFinancingMutation.mutate({ ...data, caseId });
+  };
+
+  const handleClinicalReportSubmit = (data: ClinicalReportFormValues) => {
+    const cleanedData: ClinicalReportFormValues = {
+      ...data,
+      doctorName: data.doctorName === "__none" ? "غير محدد" : data.doctorName,
+    };
+
+    const report: ClinicalReport = {
+      ...cleanedData,
+      id: `${caseId}-${Date.now()}`,
+      caseId,
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextReports = [report, ...clinicalReports];
+    setClinicalReports(nextReports);
+    saveClinicalReportsByCase(caseId, nextReports);
+
+    const nextAnalysis = analyzeClinicalReports(nextReports, caseData);
+    writeCaseSmartSync(caseId, {
+      smartLevel: nextAnalysis.riskLevel,
+      reason: nextAnalysis.aiSummary,
+      recommendation: nextAnalysis.recommendedCarePlan,
+      suggestedSpecialist: nextAnalysis.suggestedSpecialist,
+      improvement: finalProgressScore,
+      reportsCount: nextReports.length,
+      lastReportDate: nextReports[0]?.reportDate ? new Date(nextReports[0].reportDate).toISOString() : undefined,
+      needsFollowUp: nextAnalysis.riskLevel !== "ممتاز",
+      isHighRisk: nextAnalysis.riskLevel === "خطر",
+      latestReportTitle: nextReports[0]?.title,
+      latestReportText: nextReports[0]?.reportText,
+      latestReportDoctor: nextReports[0]?.doctorName,
+      latestReportType: nextReports[0]?.reportType,
+      clinicalSummary: nextAnalysis.aiSummary,
+      suggestedDiagnosis: nextAnalysis.suggestedDiagnosis,
+    });
+
+    toast.success("تم حفظ تقرير المختص وتحديث إدارة الحالات والمراقبة الذكية");
+    setIsClinicalReportDialogOpen(false);
+    clinicalReportForm.reset({
+      title: "",
+      reportType: "تقرير متابعة",
+      doctorName: "",
+      specialty: "",
+      reportDate: new Date(),
+      reportText: "",
+      reportFileName: "",
+      reportFileDataUrl: "",
+      recommendations: "",
+      administrativeNotes: "",
+    });
+  };
+
+  const deleteClinicalReport = (reportId: string) => {
+    const confirmed = confirm("هل أنت متأكدة من حذف تقرير المختص؟");
+    if (!confirmed) return;
+
+    const nextReports = clinicalReports.filter((report) => report.id !== reportId);
+    setClinicalReports(nextReports);
+    saveClinicalReportsByCase(caseId, nextReports);
+    const nextAnalysis = analyzeClinicalReports(nextReports, caseData);
+    writeCaseSmartSync(caseId, {
+      smartLevel: nextAnalysis.riskLevel,
+      reason: nextAnalysis.aiSummary,
+      recommendation: nextAnalysis.recommendedCarePlan,
+      improvement: finalProgressScore,
+      reportsCount: nextReports.length,
+      lastReportDate: nextReports[0]?.reportDate ? new Date(nextReports[0].reportDate).toISOString() : undefined,
+      latestReportTitle: nextReports[0]?.title,
+      latestReportText: nextReports[0]?.reportText,
+      latestReportDoctor: nextReports[0]?.doctorName,
+      latestReportType: nextReports[0]?.reportType,
+      clinicalSummary: nextAnalysis.aiSummary,
+      suggestedDiagnosis: nextAnalysis.suggestedDiagnosis,
+    });
+    toast.success("تم حذف التقرير وتحديث البيانات");
+  };
+
+  const downloadCarePlan = () => {
+    const content = `
+خطة الحالة - ${caseData?.childName || "حالة"}
+
+رقم الحالة: ${caseData?.caseNumber || "-"}
+الجمعية: ${caseData?.organization || "-"}
+نوع الاضطراب: ${caseData?.disorderType || caseData?.disabilityType || "-"}
+المختص: ${linkedDoctor?.name || caseData?.specialist || "-"}
+
+التصنيف الذكي: ${clinicalReportAnalysis.riskLevel || smartStats.level}
+مؤشر التقدم: ${finalProgressScore}%
+
+قرار الرعاية والتمويل:
+الاحتياج: ${smartCareFundingPlan.smartNeed}
+الأولوية: ${smartCareFundingPlan.carePriority}
+المختص المطلوب: ${smartCareFundingPlan.requiredSpecialistLevel} - ${smartCareFundingPlan.requiredServiceType}
+عدد الجلسات المقترح: ${smartCareFundingPlan.recommendedSessions}
+التكلفة المتوقعة: ${smartCareFundingPlan.expectedCareCost} ريال
+قرار التمويل: ${smartCareFundingPlan.fundingDecision}
+مبررات القرار: ${smartCareFundingPlan.smartDecisionRationale}
+
+الملخص:
+${clinicalReportAnalysis.aiSummary || smartStats.aiSummary}
+
+الخطة المقترحة:
+${clinicalReportAnalysis.recommendedCarePlan || smartStats.interventionPlan}
+
+الخطة المنزلية:
+${clinicalReportAnalysis.homePlanRecommendations.map((item) => `- ${item}`).join("\n")}
+
+التوصيات الإدارية:
+${clinicalReportAnalysis.administrativeRecommendations.map((item) => `- ${item}`).join("\n")}
+
+آخر تقرير:
+${latestReport ? `${latestReport.title} - ${latestReport.doctorName}` : "لا يوجد"}
+
+تم التوليد: ${new Date().toLocaleString("ar-SA")}
+    `.trim();
+
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const element = document.createElement("a");
+
+    element.href = url;
+    element.download = `anma-care-plan-${caseId}-${Date.now()}.txt`;
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+    URL.revokeObjectURL(url);
+
+    toast.success("تم تحميل خطة الحالة");
+  };
 
   if (!caseQuery.data) {
     return <div className="p-8 text-center">جاري التحميل...</div>;
   }
 
   return (
-    <div dir="rtl" className="min-h-screen bg-gradient-to-b from-orange-50/50 to-background p-4 md:p-8">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <Card className="border-orange-100 shadow-sm">
-          <CardContent className="p-6">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <p className="text-sm text-muted-foreground mb-1">تفاصيل الحالة</p>
-                <h1 className="text-3xl font-bold text-foreground">{caseData.childName}</h1>
-                <p className="text-muted-foreground mt-2">رقم الحالة: {caseData.caseNumber}</p>
+    <div dir="rtl" className="min-h-screen bg-slate-50 p-4 md:p-6">
+      <div className="mx-auto max-w-7xl space-y-4">
+        <section className="rounded-3xl border bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-bold text-orange-700">
+                  {caseData.caseNumber || "بدون رقم"}
+                </span>
+                <span className={`rounded-full border px-3 py-1 text-xs font-bold ${getBadgeClass(caseData.status)}`}>
+                  {caseData.status || "غير محدد"}
+                </span>
               </div>
-              <div className={`px-4 py-2 rounded-full border text-sm font-semibold ${getBadgeClass(caseData.status)}`}>
-                {caseData.status}
+
+              <h1 className="truncate text-2xl font-black text-slate-900">
+                {caseData.childName}
+              </h1>
+
+              <p className="mt-1 text-sm text-slate-500">
+                {caseData.organization || "غير محدد"} · {caseData.disorderType || caseData.disabilityType || "غير محدد"}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-5 xl:w-[760px]">
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">العمر</p>
+                <p className="mt-2 text-xl font-black">{caseData.age || "-"}</p>
+              </div>
+
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">الحضور</p>
+                <p className="mt-2 text-xl font-black">{smartStats.attendanceRate}%</p>
+              </div>
+
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">الجلسات</p>
+                <p className="mt-2 text-xl font-black">{smartStats.totalSessions}</p>
+              </div>
+
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="text-xs text-slate-500">التقارير</p>
+                <p className="mt-2 text-xl font-black">{clinicalReports.length}</p>
+              </div>
+
+              <div className="rounded-2xl bg-green-50 p-4">
+                <p className="text-xs text-slate-500">التمويل</p>
+                <p className="mt-2 text-xl font-black text-green-700">
+                  {smartCareFundingPlan.expectedCareCost.toLocaleString("ar-SA")}
+                </p>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><UserRound className="w-4 h-4" /> العمر</CardTitle></CardHeader>
-            <CardContent><div className="text-2xl font-bold text-orange-600">{caseData.age || "-"}</div></CardContent>
-          </Card>
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2"><CardTitle className="text-sm">المدينة</CardTitle></CardHeader>
-            <CardContent><div className="text-lg font-semibold">{caseData.city || "-"}</div></CardContent>
-          </Card>
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2"><CardTitle className="text-sm">نوع الاضطراب</CardTitle></CardHeader>
-            <CardContent><div className="text-lg font-semibold">{caseData.disorderType || "-"}</div></CardContent>
-          </Card>
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2"><CardTitle className="text-sm">إجمالي التمويل</CardTitle></CardHeader>
-            <CardContent><div className="text-lg font-bold text-green-700">{totalFinancing} ريال</div></CardContent>
-          </Card>
-        </div>
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <Card className="border-slate-200 bg-white shadow-sm xl:col-span-2">
+            <CardContent className="p-5">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                <div>
+                  <p className="text-xs text-slate-500">الأولوية</p>
+                  <p className="mt-1 font-black text-orange-700">{smartCareFundingPlan.carePriority}</p>
+                </div>
 
-        <Card className="border-orange-200 bg-white shadow-sm">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Brain className="w-5 h-5 text-orange-600" />
-              التحليل الذكي للحالة
-            </CardTitle>
-            <CardDescription>تحليل مبني على الحضور، التحسن، الالتزام، ووصف الحالة</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl border bg-slate-50">
-              <p className="text-sm text-muted-foreground">تصنيف الحالة</p>
-              <div className={`inline-flex mt-2 px-3 py-1 rounded-full border font-semibold ${getBadgeClass(smartStats.level)}`}>{smartStats.level}</div>
-              <p className="text-sm mt-3 text-muted-foreground">{smartStats.reason}</p>
-            </div>
-            <div className="p-4 rounded-xl border bg-slate-50">
-              <p className="text-sm text-muted-foreground">الاضطراب المحتمل</p>
-              <p className="text-lg font-bold mt-2">{smartStats.suggestedDisorder}</p>
-              <p className="text-sm text-muted-foreground mt-2">المختص المناسب: {smartStats.recommendedSpecialist}</p>
-            </div>
-            <div className="p-4 rounded-xl border bg-slate-50">
-              <p className="text-sm text-muted-foreground">خطة تدخل مقترحة</p>
-              <p className="text-sm mt-2 leading-7">{smartStats.interventionPlan}</p>
-            </div>
-          </CardContent>
-        </Card>
+                <div>
+                  <p className="text-xs text-slate-500">الاحتياج</p>
+                  <p className="mt-1 font-bold text-slate-900">{smartCareFundingPlan.smartNeed}</p>
+                </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">الحضور</p><p className="text-2xl font-bold">{smartStats.attendanceRate}%</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">نسبة التحسن</p><p className="text-2xl font-bold">{smartStats.improvement}%</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">إنجاز البكج</p><p className="text-2xl font-bold">{smartStats.packageProgress}%</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">المتبقي من الجلسات</p><p className="text-2xl font-bold">{smartStats.remaining}</p></CardContent></Card>
-        </div>
+                <div>
+                  <p className="text-xs text-slate-500">جلسات مقترحة</p>
+                  <p className="mt-1 font-black text-slate-900">{smartCareFundingPlan.recommendedSessions}</p>
+                </div>
 
-        <Tabs defaultValue="sessions" className="w-full">
-          <TabsList className="grid w-full grid-cols-5 bg-white border">
-            <TabsTrigger value="sessions">الجلسات</TabsTrigger>
-            <TabsTrigger value="impact">قياس الأثر</TabsTrigger>
-            <TabsTrigger value="compliance">الالتزام</TabsTrigger>
-            <TabsTrigger value="financing">التمويل</TabsTrigger>
-            <TabsTrigger value="analysis">التحليل</TabsTrigger>
+                <div>
+                  <p className="text-xs text-slate-500">المختص المقترح</p>
+                  <p className="mt-1 font-bold text-slate-900">{smartCareFundingPlan.requiredServiceType}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-slate-200 bg-white shadow-sm">
+            <CardContent className="p-5">
+              <p className="text-xs text-slate-500">المختص المسؤول</p>
+              <p className="mt-1 font-black text-slate-900">
+                {linkedDoctor?.name || caseData.specialist || "غير محدد"}
+              </p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded-full bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">
+                  {linkedDoctor?.specialty || "غير محدد"}
+                </span>
+                <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-green-700">
+                  {(getNumber(linkedDoctor?.sessionCost || linkedDoctor?.pricePerSession) || smartCareFundingPlan.expectedSessionCost).toLocaleString("ar-SA")} ريال / جلسة
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="flex flex-wrap gap-2 rounded-3xl border bg-white p-4 shadow-sm">
+          <Button className="rounded-2xl bg-slate-900 hover:bg-slate-800" onClick={() => setIsSessionDialogOpen(true)}>
+            <Plus className="ml-2 h-4 w-4" />
+            جلسة
+          </Button>
+
+          <Button variant="outline" className="rounded-2xl" onClick={() => setIsClinicalReportDialogOpen(true)}>
+            <FileText className="ml-2 h-4 w-4" />
+            تقرير
+          </Button>
+
+          <Button variant="outline" className="rounded-2xl" onClick={() => setIsFinancingDialogOpen(true)}>
+            <Wallet className="ml-2 h-4 w-4" />
+            تمويل
+          </Button>
+
+          <Button variant="outline" className="rounded-2xl" onClick={downloadCarePlan}>
+            <ClipboardCheck className="ml-2 h-4 w-4" />
+            خطة الحالة
+          </Button>
+        </section>
+
+        <Tabs defaultValue="analysis" className="w-full">
+          <TabsList className="grid h-auto w-full grid-cols-3 rounded-2xl border bg-white p-1 md:grid-cols-6">
+            <TabsTrigger className="rounded-xl py-3" value="analysis">النظرة العامة</TabsTrigger>
+            <TabsTrigger className="rounded-xl py-3" value="clinicalReports">التقارير</TabsTrigger>
+            <TabsTrigger className="rounded-xl py-3" value="sessions">الجلسات</TabsTrigger>
+            <TabsTrigger className="rounded-xl py-3" value="financing">التمويل</TabsTrigger>
+            <TabsTrigger className="rounded-xl py-3" value="impact">الأثر</TabsTrigger>
+            <TabsTrigger className="rounded-xl py-3" value="compliance">الالتزام</TabsTrigger>
           </TabsList>
 
           <TabsContent value="sessions" className="space-y-4">
-            <Card>
+            <Card className="border-slate-200 bg-white shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between gap-4">
                 <div>
                   <CardTitle className="flex items-center gap-2"><CalendarCheck className="w-5 h-5 text-orange-600" /> سجل الجلسات</CardTitle>
@@ -658,7 +1552,15 @@ export default function CaseDetails() {
                               >
                                 <FormControl><SelectTrigger><SelectValue placeholder="اختاري الأخصائي" /></SelectTrigger></FormControl>
                                 <SelectContent>
-                                  {specialistOptions.map((s) => <SelectItem key={s.name} value={s.name}>{s.name}</SelectItem>)}
+                                  {specialistOptions.length === 0 ? (
+                                    <SelectItem value="غير محدد">لا يوجد مختصون مسجلون</SelectItem>
+                                  ) : (
+                                    specialistOptions.map((s) => (
+                                      <SelectItem key={s.id} value={s.name}>
+                                        {s.name} — {s.specialty}
+                                      </SelectItem>
+                                    ))
+                                  )}
                                 </SelectContent>
                               </Select>
                               <FormMessage />
@@ -772,7 +1674,7 @@ export default function CaseDetails() {
           </TabsContent>
 
           <TabsContent value="impact" className="space-y-4">
-            <Card>
+            <Card className="border-slate-200 bg-white shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><TrendingUp className="w-5 h-5 text-orange-600" /> قياس الأثر</CardTitle>
@@ -833,7 +1735,7 @@ export default function CaseDetails() {
           </TabsContent>
 
           <TabsContent value="compliance" className="space-y-4">
-            <Card>
+            <Card className="border-slate-200 bg-white shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><ClipboardCheck className="w-5 h-5 text-orange-600" /> التزام الأسرة</CardTitle>
@@ -891,7 +1793,7 @@ export default function CaseDetails() {
           </TabsContent>
 
           <TabsContent value="financing" className="space-y-4">
-            <Card>
+            <Card className="border-slate-200 bg-white shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><Wallet className="w-5 h-5 text-orange-600" /> التمويل</CardTitle>
@@ -960,98 +1862,469 @@ export default function CaseDetails() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="analysis" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-orange-600" /> التحليل والتوصيات</CardTitle>
-                <CardDescription>تحليل ذكي لا يذكر خطر إلا بسبب واضح</CardDescription>
+          <TabsContent value="clinicalReports" className="space-y-4">
+            <Card className="border-slate-200 bg-white shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between gap-4">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-orange-600" />
+                    تقارير المختصين
+                  </CardTitle>
+                  <CardDescription>
+                    ملف تقارير لكل مريض؛ يستخدمه الذكاء الاصطناعي لبناء خطة أدق وتحديث إدارة الحالات تلقائياً.
+                  </CardDescription>
+                </div>
+
+                <Dialog open={isClinicalReportDialogOpen} onOpenChange={setIsClinicalReportDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="bg-orange-600 hover:bg-orange-700">
+                      <Plus className="w-4 h-4 ml-2" />
+                      إضافة تقرير
+                    </Button>
+                  </DialogTrigger>
+
+                  <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>إضافة تقرير مختص</DialogTitle>
+                    </DialogHeader>
+
+                    <Form {...clinicalReportForm}>
+                      <form onSubmit={clinicalReportForm.handleSubmit(handleClinicalReportSubmit)} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <FormField control={clinicalReportForm.control} name="title" render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>عنوان التقرير</FormLabel>
+                              <FormControl><Input placeholder="مثال: تقرير متابعة التخاطب" className={lightInputClass} {...field} /></FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )} />
+
+                          <FormField control={clinicalReportForm.control} name="reportType" render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>نوع التقرير</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                <SelectContent>
+                                  <SelectItem value="تقرير تقييم أولي">تقرير تقييم أولي</SelectItem>
+                                  <SelectItem value="تقرير جلسة">تقرير جلسة</SelectItem>
+                                  <SelectItem value="تقرير نطق وتخاطب">تقرير نطق وتخاطب</SelectItem>
+                                  <SelectItem value="تقرير علاج وظيفي">تقرير علاج وظيفي</SelectItem>
+                                  <SelectItem value="تقرير علاج طبيعي">تقرير علاج طبيعي</SelectItem>
+                                  <SelectItem value="تقرير نفسي">تقرير نفسي</SelectItem>
+                                  <SelectItem value="تقرير نمو وسلوك">تقرير نمو وسلوك</SelectItem>
+                                  <SelectItem value="تقرير تعديل سلوك">تقرير تعديل سلوك</SelectItem>
+                                  <SelectItem value="تقرير متابعة">تقرير متابعة</SelectItem>
+                                  <SelectItem value="تقرير ختامي">تقرير ختامي</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )} />
+
+                          <FormField control={clinicalReportForm.control} name="doctorName" render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>اسم المختص</FormLabel>
+                              <Select
+                                onValueChange={(value) => {
+                                  const safeValue = value === "__none" ? "غير محدد" : value;
+                                  field.onChange(safeValue);
+                                  const selected = specialistOptions.find((item) => item.name === safeValue);
+                                  clinicalReportForm.setValue("specialty", selected?.specialty || "");
+                                }}
+                                value={field.value || "__none"}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="اختاري المختص" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="__none">غير محدد</SelectItem>
+                                  {specialistOptions.map((doctor) => (
+                                    <SelectItem key={doctor.id} value={doctor.name}>
+                                      {doctor.name} — {doctor.specialty}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )} />
+
+                          <FormField control={clinicalReportForm.control} name="specialty" render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>التخصص</FormLabel>
+                              <FormControl><Input placeholder="مثال: تخاطب / علاج وظيفي" className={lightInputClass} {...field} /></FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )} />
+
+                          <FormField control={clinicalReportForm.control} name="reportDate" render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>تاريخ التقرير</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="date"
+                                  value={field.value?.toISOString().split("T")[0]}
+                                  onChange={(e) => field.onChange(new Date(e.target.value))}
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )} />
+                        </div>
+
+                        <FormField control={clinicalReportForm.control} name="reportText" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>نص التقرير</FormLabel>
+                            <FormControl>
+                              <textarea
+                                placeholder="اكتبي تقرير المختص هنا..."
+                                className="w-full px-3 py-2 border border-input rounded-md min-h-[140px]"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+
+                        <FormField control={clinicalReportForm.control} name="reportFileDataUrl" render={() => (
+                          <FormItem>
+                            <FormLabel>ملف التقرير PDF / Word <span className="text-xs text-muted-foreground">(اختياري)</span></FormLabel>
+                            <FormControl>
+                              <Input
+                                type="file"
+                                accept=".pdf,.doc,.docx"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0];
+
+                                  if (!file) {
+                                    clinicalReportForm.setValue("reportFileName", "");
+                                    clinicalReportForm.setValue("reportFileDataUrl", "");
+                                    return;
+                                  }
+
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    clinicalReportForm.setValue("reportFileName", file.name);
+                                    clinicalReportForm.setValue("reportFileDataUrl", String(reader.result || ""));
+                                  };
+                                  reader.readAsDataURL(file);
+                                }}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+
+                        <FormField control={clinicalReportForm.control} name="recommendations" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>توصيات المختص</FormLabel>
+                            <FormControl>
+                              <textarea
+                                placeholder="التوصيات العلاجية أو المنزلية..."
+                                className="w-full px-3 py-2 border border-input rounded-md min-h-[100px]"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+
+                        <FormField control={clinicalReportForm.control} name="administrativeNotes" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>ملاحظات إدارية</FormLabel>
+                            <FormControl><Input placeholder="اختياري" className={lightInputClass} {...field} /></FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+
+                        <Button type="submit" className="w-full bg-orange-600 hover:bg-orange-700">
+                          حفظ التقرير وتحديث التحليل
+                        </Button>
+                      </form>
+                    </Form>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-2xl border border-orange-100 bg-gradient-to-l from-orange-50 to-white p-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <h3 className="font-bold flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-orange-600" />
-                        AI Case Intelligence Tool
-                      </h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        يقرأ الجلسات، الحضور، القياسات، الالتزام، ووصف الحالة ثم يطلع توصية موحدة تظهر في إدارة الحالات والداشبورد.
-                      </p>
-                    </div>
-                    <div className={`self-start rounded-full border px-3 py-1 text-sm font-semibold ${getBadgeClass(smartStats.level)}`}>
-                      {smartStats.level}
-                    </div>
-                  </div>
+
+              <CardContent className="space-y-5">
+                <div className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4">
+                  <h3 className="font-bold flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-orange-600" />
+                    تحليل تقارير المختصين
+                  </h3>
+
                   <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
                     <div className="rounded-xl bg-white p-3 border">
-                      <p className="text-xs text-muted-foreground">سبب القرار</p>
-                      <p className="mt-1 text-sm leading-6">{smartStats.reason}</p>
+                      <p className="text-xs text-muted-foreground">الملخص</p>
+                      <p className="mt-1 text-sm leading-7">{clinicalReportAnalysis.aiSummary}</p>
                     </div>
+
                     <div className="rounded-xl bg-white p-3 border">
-                      <p className="text-xs text-muted-foreground">المختص المقترح</p>
-                      <p className="mt-1 text-sm font-semibold">{smartStats.recommendedSpecialist}</p>
+                      <p className="text-xs text-muted-foreground">مستوى الخطورة</p>
+                      <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-sm font-semibold ${getBadgeClass(clinicalReportAnalysis.riskLevel)}`}>
+                        {clinicalReportAnalysis.riskLevel}
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">مؤشر التقدم النهائي: {finalProgressScore}%</p>
                     </div>
+
+                    <div className="rounded-xl bg-white p-3 border">
+                      <p className="text-xs text-muted-foreground">التوقع القادم</p>
+                      <p className="mt-1 text-sm leading-7">{clinicalReportAnalysis.predictedOutcome}</p>
+                    </div>
+
+                    <div className="rounded-xl bg-white p-3 border">
+                      <p className="text-xs text-muted-foreground">نقاط القوة</p>
+                      <ul className="mt-2 list-disc space-y-1 pr-5 text-sm">
+                        {clinicalReportAnalysis.strengths.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+
+                    <div className="rounded-xl bg-white p-3 border">
+                      <p className="text-xs text-muted-foreground">نقاط الضعف</p>
+                      <ul className="mt-2 list-disc space-y-1 pr-5 text-sm">
+                        {clinicalReportAnalysis.weaknesses.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+
                     <div className="rounded-xl bg-white p-3 border">
                       <p className="text-xs text-muted-foreground">الخطة المقترحة</p>
-                      <p className="mt-1 text-sm leading-6">{smartStats.interventionPlan}</p>
+                      <p className="mt-1 text-sm leading-7">{clinicalReportAnalysis.recommendedCarePlan}</p>
                     </div>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border bg-white p-3 text-sm leading-7 text-slate-600">
+                    <b>الربط التلقائي:</b> بعد حفظ التقرير يتم تحديث مؤشر التقدم، التصنيف الذكي، آخر تقرير، الخطة المقترحة، والتنبيهات في إدارة الحالات والمراقبة الذكية والتقارير.
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 border rounded-xl bg-slate-50">
-                    <h3 className="font-bold mb-2 flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> التنبيهات</h3>
-                    <ul className="text-sm space-y-2 text-muted-foreground">
-                      {!smartStats.hasAnyAnalysisData && (
-                        <li>لا توجد بيانات كافية للتحليل حتى الآن. أضيفي أول جلسة أو قياس للحالة.</li>
+                <div className="space-y-3">
+                  {clinicalReports.map((report) => (
+                    <div key={report.id} className="rounded-2xl border bg-white p-4 shadow-sm">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <h3 className="font-bold text-slate-900">{report.title}</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {report.reportType} — {report.doctorName} {report.specialty ? `— ${report.specialty}` : ""}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {new Date(report.reportDate).toLocaleDateString("ar-SA")}
+                          </p>
+                        </div>
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:text-red-700"
+                          onClick={() => deleteClinicalReport(report.id)}
+                        >
+                          حذف
+                        </Button>
+                      </div>
+
+                      <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm leading-7 whitespace-pre-line">
+                        {report.reportText}
+                      </div>
+
+                      {report.reportFileDataUrl && (
+                        <a
+                          href={report.reportFileDataUrl}
+                          download={report.reportFileName || "clinical-report"}
+                          className="mt-3 inline-flex rounded-xl bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 hover:bg-blue-100"
+                        >
+                          تحميل ملف التقرير
+                        </a>
                       )}
 
-                      {smartStats.hasSessions && smartStats.absentSessions >= 2 && (
-                        <li>يوجد غياب متكرر: {smartStats.absentSessions} جلسات.</li>
+                      {report.recommendations && (
+                        <div className="mt-3 rounded-xl bg-orange-50 p-3 text-sm leading-7">
+                          <b>توصيات المختص:</b> {report.recommendations}
+                        </div>
                       )}
+                    </div>
+                  ))}
 
-                      {smartStats.hasSessions && smartStats.attendanceRate < 80 && (
-                        <li>نسبة الحضور أقل من المطلوب: {smartStats.attendanceRate}%.</li>
-                      )}
+                  {!clinicalReports.length && (
+                    <div className="rounded-2xl bg-slate-50 p-8 text-center text-sm text-muted-foreground">
+                      لا توجد تقارير مختصين حتى الآن.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-                      {smartStats.hasImpacts && smartStats.improvement < 50 && (
-                        <li>نسبة التحسن منخفضة وتحتاج مراجعة الخطة.</li>
-                      )}
-
-                      {smartStats.hasSessions && smartStats.remaining <= 2 && (
-                        <li>تبقى عدد قليل من جلسات البكج، يفضل تجهيز تقييم ختامي.</li>
-                      )}
-
-                      {smartStats.hasAnyAnalysisData &&
-                        smartStats.absentSessions < 2 &&
-                        (!smartStats.hasSessions || smartStats.attendanceRate >= 80) &&
-                        (!smartStats.hasImpacts || smartStats.improvement >= 50) && (
-                          <li>لا توجد تنبيهات عالية حاليًا.</li>
-                        )}
-                    </ul>
+          <TabsContent value="analysis" className="space-y-4">
+            <Card className="border-slate-200 bg-white shadow-sm">
+              <CardContent className="p-5">
+                <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="flex items-center gap-2 text-lg font-black text-slate-900">
+                      <Sparkles className="h-5 w-5 text-orange-600" />
+                      النظرة العامة
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                      ملخص سريع للحالة والمؤشرات الحالية.
+                    </p>
                   </div>
 
-                  <div className="p-4 border rounded-xl bg-slate-50">
-                    <h3 className="font-bold mb-2 flex items-center gap-2"><FileText className="w-4 h-4" /> ملخص تنفيذي</h3>
-                    <p className="text-sm leading-7 text-muted-foreground">
-                      الحالة مصنفة حاليًا: <b>{smartStats.level}</b>. السبب: {smartStats.reason}
-                      {" "}التوصية: {smartStats.recommendedSpecialist}. خطة التدخل: {smartStats.interventionPlan}
+                  <div className={`w-fit rounded-full border px-3 py-1 text-xs font-bold ${getBadgeClass(smartStats.level)}`}>
+                    {smartStats.level}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                  <div className="rounded-2xl border bg-slate-50 p-4 xl:col-span-2">
+                    <p className="text-xs font-bold text-slate-500">ملخص الحالة</p>
+                    <p className="mt-2 text-sm leading-7 text-slate-700">
+                      {smartStats.aiSummary}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border bg-orange-50 p-4">
+                    <p className="text-xs font-bold text-orange-700">الإجراء التالي</p>
+                    <p className="mt-2 text-sm leading-7 text-slate-800">
+                      {clinicalReportAnalysis.nextAction || smartStats.clinicalRecommendation}
                     </p>
                   </div>
                 </div>
 
-                <Button
-                  className="bg-orange-600 hover:bg-orange-700"
-                  disabled={analysisMutation.isPending}
-                  onClick={() => analysisMutation.mutate({ caseId })}
-                >
-                  <Sparkles className="w-4 h-4 ml-2" />
-                  {analysisMutation.isPending ? "جاري التحليل..." : "تشغيل تحليل النظام"}
-                </Button>
+                <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs text-slate-500">الخطورة</p>
+                    <p className="mt-2 text-lg font-black text-slate-900">{smartStats.riskLevel}</p>
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs text-slate-500">الحضور</p>
+                    <p className="mt-2 text-lg font-black text-slate-900">{smartStats.attendanceRate}%</p>
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs text-slate-500">التقدم</p>
+                    <p className="mt-2 text-lg font-black text-slate-900">{finalProgressScore}%</p>
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs text-slate-500">التقارير</p>
+                    <p className="mt-2 text-lg font-black text-slate-900">{clinicalReports.length}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs font-bold text-slate-500">الخطة المقترحة</p>
+                    <p className="mt-2 text-sm leading-7 text-slate-700">
+                      {smartStats.interventionPlan}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-4">
+                    <p className="text-xs font-bold text-slate-500">التوقع القادم</p>
+                    <p className="mt-2 text-sm leading-7 text-slate-700">
+                      {smartStats.predictedOutcome}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-orange-600" />
+                    <p className="text-sm font-black text-slate-900">التنبيهات</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {!smartStats.hasAnyAnalysisData && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                        لا توجد بيانات كافية بعد. أضيفي جلسة أو تقرير.
+                      </div>
+                    )}
+
+                    {smartStats.hasSessions && smartStats.absentSessions >= 2 && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                        غياب متكرر: {smartStats.absentSessions} جلسات.
+                      </div>
+                    )}
+
+                    {smartStats.hasSessions && smartStats.attendanceRate < 80 && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                        الحضور أقل من المطلوب: {smartStats.attendanceRate}%.
+                      </div>
+                    )}
+
+                    {smartStats.hasImpacts && smartStats.improvement < 50 && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                        التحسن منخفض ويحتاج مراجعة.
+                      </div>
+                    )}
+
+                    {smartStats.hasSessions && smartStats.remaining <= 2 && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                        المتبقي من الجلسات قليل.
+                      </div>
+                    )}
+
+                    {smartStats.hasAnyAnalysisData &&
+                      smartStats.absentSessions < 2 &&
+                      (!smartStats.hasSessions || smartStats.attendanceRate >= 80) &&
+                      (!smartStats.hasImpacts || smartStats.improvement >= 50) && (
+                        <div className="rounded-xl bg-white p-3 text-sm text-slate-600">
+                          لا توجد تنبيهات عالية حاليًا.
+                        </div>
+                      )}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Button
+                    className="rounded-2xl bg-orange-600 hover:bg-orange-700"
+                    disabled={analysisMutation.isPending}
+                    onClick={() =>
+                      analysisMutation.mutate({
+                        caseId,
+                        useOpenAI: true,
+                        caseData: safeCaseDataForAI,
+                        sessions: safeSessionsForAI,
+                        clinicalReports: safeClinicalReportsForAI,
+                      })
+                    }
+                  >
+                    <Sparkles className="ml-2 h-4 w-4" />
+                    {analysisMutation.isPending ? "جاري التحليل..." : "تشغيل التحليل"}
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    className="rounded-2xl"
+                    onClick={downloadCarePlan}
+                  >
+                    <FileText className="ml-2 h-4 w-4" />
+                    تحميل الخطة
+                  </Button>
+                </div>
 
                 {analysisMutation.data && (
-                  <div className="p-4 border rounded-xl bg-orange-50 whitespace-pre-line">
-                    {String((analysisMutation.data as any)?.analysis || JSON.stringify(analysisMutation.data, null, 2))}
+                  <div className="mt-4 rounded-2xl border border-orange-100 bg-orange-50 p-4">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-bold ${
+                          (analysisMutation.data as any)?.usedOpenAI
+                            ? "bg-green-100 text-green-700"
+                            : "bg-yellow-100 text-yellow-700"
+                        }`}
+                      >
+                        {(analysisMutation.data as any)?.usedOpenAI ? "OpenAI" : "تحليل محلي"}
+                      </span>
+                    </div>
+
+                    <p className="whitespace-pre-line text-sm leading-7 text-slate-700">
+                      {String(
+                        (analysisMutation.data as any)?.aiSummary ||
+                          (analysisMutation.data as any)?.analysis ||
+                          JSON.stringify(analysisMutation.data, null, 2)
+                      )}
+                    </p>
                   </div>
                 )}
               </CardContent>
